@@ -23,11 +23,13 @@ keeper chat
 # 单命令执行
 keeper run 检查 192.168.1.100
 
-# 查看状态
-keeper status
+# 执行 Shell 命令
+keeper exec -- df -h /
+keeper exec -- ps aux --sort=-%mem
 
-# 初始化配置
-keeper init
+# 配置管理
+keeper config set --threshold 80 --metric cpu
+keeper config show
 ```
 
 ## 技术架构
@@ -79,10 +81,11 @@ keeper init
 
 - `inspect` - 服务器资源巡检
 - `scan` - 漏洞扫描
-- `config` - 配置管理
+- `config` - 配置管理（查看/修改配置）
 - `logs` - 日志查询
 - `help` - 帮助
 - `install` - 安装软件（本地或远程 SSH 安装）
+- `confirm` - 确认执行（yes/y/好的/确认）
 - `unknown` - 未知意图
 
 ### 记忆系统
@@ -106,6 +109,10 @@ keeper init
 keeper config set --api-key YOUR_API_KEY \
   --base-url https://api.qnaigc.com/v1 \
   --model claude-sonnet-4-6
+
+# 设置阈值
+keeper config set --threshold 80 --metric cpu
+keeper config set --threshold 85  # 设置所有阈值
 
 # 查看配置
 keeper config show
