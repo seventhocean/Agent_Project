@@ -57,7 +57,8 @@ keeper init
 │   │   └── context.py    # 上下文管理 + 记忆系统
 │   └── tools/
 │       ├── server.py     # 服务器工具 (psutil)
-│       └── scanner.py    # 扫描工具 (Nmap)
+│       ├── scanner.py    # 扫描工具 (Nmap)
+│       └── ssh.py        # SSH 远程执行工具
 ├── tests/
 │   └── test_keeper.py    # 单元测试
 ├── keeper_entry.py       # 入口脚本
@@ -81,6 +82,7 @@ keeper init
 - `config` - 配置管理
 - `logs` - 日志查询
 - `help` - 帮助
+- `install` - 安装软件（本地或远程 SSH 安装）
 - `unknown` - 未知意图
 
 ### 记忆系统
@@ -95,9 +97,7 @@ keeper init
 
 | 文件 | 路径 | 说明 |
 |------|------|------|
-| 主配置 | `~/.keeper/config.yaml` | 环境配置、阈值、主机列表 |
-| LLM 配置 | `~/.keeper/llm_config.yaml` | LLM 设置（provider, model, base_url） |
-| API Key | `~/.keeper/api_key` | 敏感信息，权限 600（仅所有者可读写） |
+| 配置文件 | `~/.keeper/config.yaml` | 所有配置（LLM、环境、阈值、主机列表） |
 
 ### 配置命令
 
@@ -117,7 +117,7 @@ keeper config clear
 ### 配置加载顺序
 
 1. 环境变量（仅作为默认值）
-2. 配置文件（`~/.keeper/`）
+2. 配置文件（`~/.keeper/config.yaml`）
 3. `keeper config set` 命令保存的配置
 
 ### 配置文件结构
@@ -125,18 +125,15 @@ keeper config clear
 ```yaml
 # ~/.keeper/config.yaml
 current_profile: dev
-
 profiles:
   dev:
     hosts: [localhost]
     thresholds: {cpu: 90, memory: 90, disk: 95}
-```
-
-```yaml
-# ~/.keeper/llm_config.yaml
-provider: openai_compatible
-base_url: https://api.qnaigc.com/v1
-model: claude-sonnet-4-6
+llm:
+  provider: openai_compatible
+  api_key: sk-xxx
+  base_url: https://api.qnaigc.com/v1
+  model: doubao-seed-2.0-mini
 ```
 
 ## 开发注意事项
@@ -148,8 +145,6 @@ model: claude-sonnet-4-6
 
 ## 待实现功能 (Phase 2+)
 
-- [ ] Nmap 漏洞扫描完整集成
-- [ ] SSH 远程服务器采集
 - [ ] 多主机批量巡检
 - [ ] HTML/JSON 报告生成
 - [ ] 智能告警分析
