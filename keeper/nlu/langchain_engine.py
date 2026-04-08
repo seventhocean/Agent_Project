@@ -27,7 +27,7 @@ class LangChainEngine(NLUEngine):
 支持的意图类型（仅 is_task=true 时填写）：
 - inspect: 服务器资源巡检
 - scan: 漏洞扫描
-- config: 配置管理
+- config: 配置管理（查看或修改配置）
 - logs: 日志查询
 - help: 帮助
 - install: 安装软件（如"安装 nmap"、"帮我安装漏洞扫描工具"）
@@ -38,9 +38,10 @@ class LangChainEngine(NLUEngine):
 - host: IP 地址或主机名
 - package: 软件包名（如 nmap, htop, docker）
 - threshold: 阈值百分比数字
+- metric: 指标名称（cpu, memory, disk）
 - profile: 环境名称
+- action: 动作（set, get, show, update）
 - time: 时间范围
-- metric: 指标名称
 
 直接回复规则（仅 is_task=false 时填写）：
 - 友好、简洁
@@ -56,7 +57,8 @@ class LangChainEngine(NLUEngine):
 用户："安装 nmap" → is_task=true, intent=install, entities=package=nmap, confidence=0.95
 用户："在 192.168.1.100 上安装 nmap" → is_task=true, intent=install, entities=package=nmap, host=192.168.1.100
 用户："yes" → is_task=true, intent=confirm, confidence=0.95
-用户："好的" → is_task=true, intent=confirm, confidence=0.95
+用户："把 CPU 阈值设置为 80%" → is_task=true, intent=config, entities={{"action":"set","metric":"cpu","threshold":80}}
+用户："阈值改为 80" → is_task=true, intent=config, entities={{"action":"set","threshold":80}}
 """
 
     def __init__(

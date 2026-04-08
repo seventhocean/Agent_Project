@@ -280,12 +280,37 @@ class Agent:
         """处理配置管理意图"""
         action = entities.get("action")
         profile = entities.get("profile")
+        metric = entities.get("metric")
+        threshold = entities.get("threshold")
 
         # 切换环境
-        if profile:
+        if profile and not action:
             self.state.context.current_profile = profile
             self.config.current_profile = profile
             return f"[配置] 已切换到环境：{profile}"
+
+        # 修改阈值
+        if action in ("set", "update") and threshold is not None:
+            current_profile = self.config.current_profile
+            profile_config = self.config.get_profile(current_profile)
+
+            # 更新阈值
+            if "thresholds" not in profile_config:
+                profile_config["thresholds"] = {}
+
+            # 支持单个或全部阈值修改
+            if metric:
+                profile_config["thresholds"][metric] = int(threshold)
+                self.config.set_profile(current_profile, profile_config)
+                metric_name = {"cpu": "CPU", "memory": "内存", "disk": "磁盘"}.get(metric, metric)
+                return f"[配置] 已将 {metric_name} 阈值设置为 {threshold}%"
+            else:
+                # 全部阈值
+                profile_config["thresholds"]["cpu"] = int(threshold)
+                profile_config["thresholds"]["memory"] = int(threshold)
+                profile_config["thresholds"]["disk"] = int(threshold)
+                self.config.set_profile(current_profile, profile_config)
+                return f"[配置] 已将所有阈值设置为 {threshold}%"
 
         # 显示配置
         current_profile = self.config.get_profile()

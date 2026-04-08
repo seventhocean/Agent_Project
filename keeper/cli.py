@@ -153,6 +153,57 @@ def run(command, host, profile, full):
         sys.exit(1)
 
 
+@cli.command(context_settings={'ignore_unknown_options': True})
+@click.argument('shell_command', nargs=-1)
+@click.option('--host', '-h', default='localhost', help='目标主机')
+def exec(shell_command, host):
+    """执行 Shell 命令
+
+    示例:
+        keeper exec ls -la /home
+        keeper exec df -h
+        keeper exec ps aux --sort=-%mem
+    """
+    import subprocess
+
+    cmd = ' '.join(shell_command)
+    if not cmd:
+        click.echo(click.style("[错误] 请指定要执行的命令", fg='red'))
+        sys.exit(1)
+
+    try:
+        if host == 'localhost':
+            # 本地执行
+            result = subprocess.run(
+                cmd,
+                shell=True,
+                capture_output=True,
+                text=True,
+                timeout=60,
+            )
+            if result.returncode == 0:
+                click.echo(result.stdout)
+            else:
+                click.echo(click.style(f"[错误] {result.stderr}", fg='red'))
+                sys.exit(result.returncode)
+        else:
+            # 远程执行
+            from keeper.tools.ssh import SSHTools, SSHConfig
+            ssh_config = SSHConfig(host=host)
+            success, output = SSHTools.execute(ssh_config, cmd)
+            if success:
+                click.echo(output)
+            else:
+                click.echo(click.style(f"[错误] {output}", fg='red'))
+                sys.exit(1)
+    except subprocess.TimeoutExpired:
+        click.echo(click.style("[错误] 命令执行超时", fg='red'))
+        sys.exit(1)
+    except Exception as e:
+        click.echo(click.style(f"[错误] {e}", fg='red'))
+        sys.exit(1)
+
+
 @cli.command()
 def status():
     """显示当前状态"""
@@ -214,23 +265,55 @@ def config():
 
 
 @config.command()
+@click.option('--threshold', '-t', type=int, help='阈值百分比')
+@click.option('--metric', '-m', type=click.Choice(['cpu', 'memory', 'disk']), help='指标名称')
+@click.option('--profile', '-p', help='环境名称')
 @click.option('--api-key', help='API Key')
 @click.option('--base-url', help='API Base URL')
 @click.option('--model', help='模型名称')
 @click.option('--provider', type=click.Choice(['openai_compatible', 'anthropic']), help='LLM 提供商')
-def set(api_key, base_url, model, provider):
-    """设置 LLM 配置
+def set(threshold, metric, profile, api_key, base_url, model, provider):
+    """设置配置
 
     示例:
+        keeper config set --threshold 80 --metric cpu  # 设置 CPU 阈值为 80%
+        keeper config set --threshold 80  # 设置所有阈值为 80%
+        keeper config set --profile production  # 切换环境
         keeper config set --api-key sk-xxx
-        keeper config set --api-key sk-xxx --base-url https://api.qnaigc.com/v1
-        keeper config set --provider anthropic --model claude-sonnet-4-6
+        keeper config set --model claude-sonnet-4-6
     """
     config = AppConfig.from_env()
     config.load()
 
     updated = False
 
+    # 修改阈值
+    if threshold is not None:
+        profile_name = profile or config.current_profile
+        profile_config = config.get_profile(profile_name)
+        if "thresholds" not in profile_config:
+            profile_config["thresholds"] = {}
+
+        if metric:
+            profile_config["thresholds"][metric] = threshold
+            click.echo(click.style(f"✓ 已将 {metric.upper()} 阈值设置为 {threshold}%", fg='green'))
+        else:
+            profile_config["thresholds"]["cpu"] = threshold
+            profile_config["thresholds"]["memory"] = threshold
+            profile_config["thresholds"]["disk"] = threshold
+            click.echo(click.style(f"✓ 已将所有阈值设置为 {threshold}%", fg='green'))
+
+        config.set_profile(profile_name, profile_config)
+        updated = True
+
+    # 切换环境
+    if profile and threshold is None:
+        config.current_profile = profile
+        config.save()
+        click.echo(click.style(f"✓ 已切换到环境：{profile}", fg='green'))
+        updated = True
+
+    # LLM 配置
     if api_key:
         config.llm.api_key = api_key
         updated = True
@@ -247,16 +330,16 @@ def set(api_key, base_url, model, provider):
         config.llm.provider = provider
         updated = True
 
-    if updated:
+    if updated and (api_key or base_url or model or provider):
         config.save_llm_config()
-        click.echo(click.style("✓ 配置已保存:", fg='green'))
+        click.echo(click.style("✓ LLM 配置已保存:", fg='green'))
         click.echo(f"  Provider: {config.llm.provider}")
         click.echo(f"  Model: {config.llm.model}")
         click.echo(f"  Base URL: {config.llm.base_url}")
         if api_key:
             key_preview = api_key[:8] + "..." if len(api_key) > 8 else "***"
             click.echo(f"  API Key: {key_preview} ✓")
-    else:
+    elif not updated:
         # 显示当前配置
         click.echo("当前 LLM 配置:")
         click.echo(f"  Provider: {config.llm.provider}")
