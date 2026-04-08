@@ -12,6 +12,7 @@ class IntentType(str, Enum):
     CONFIG = "config"        # 配置管理
     LOGS = "logs"            # 日志查询
     HELP = "help"            # 帮助
+    INSTALL = "install"      # 安装软件
     CHAT = "chat"            # 闲聊/知识问答（非任务）
     UNKNOWN = "unknown"      # 未知意图
 

@@ -28,6 +28,67 @@ class ScanResult:
     risks: List[Dict[str, str]] = field(default_factory=list)
 
 
+class NmapNotInstalledError(Exception):
+    """Nmap 未安装异常"""
+
+    INSTALL_COMMANDS = {
+        "ubuntu": "sudo apt-get install nmap",
+        "debian": "sudo apt-get install nmap",
+        "centos": "sudo yum install nmap",
+        "rhel": "sudo yum install nmap",
+        "fedora": "sudo dnf install nmap",
+        "arch": "sudo pacman -S nmap",
+        "macos": "brew install nmap",
+    }
+
+    @staticmethod
+    def detect_os() -> str:
+        """检测操作系统"""
+        import platform
+        system = platform.system().lower()
+
+        if system == "linux":
+            # 检测发行版
+            try:
+                with open("/etc/os-release") as f:
+                    content = f.read().lower()
+                    if "ubuntu" in content:
+                        return "ubuntu"
+                    elif "debian" in content:
+                        return "debian"
+                    elif "centos" in content:
+                        return "centos"
+                    elif "fedora" in content:
+                        return "fedora"
+                    elif "arch" in content:
+                        return "arch"
+            except:
+                pass
+            return "linux"
+        elif system == "darwin":
+            return "macos"
+        return "unknown"
+
+    @classmethod
+    def get_install_command(cls) -> str:
+        """获取安装命令"""
+        os_type = cls.detect_os()
+        return cls.INSTALL_COMMANDS.get(os_type, "请使用包管理器安装 nmap")
+
+    @classmethod
+    def get_help_message(cls) -> str:
+        """获取帮助信息"""
+        os_type = cls.detect_os()
+        cmd = cls.get_install_command()
+
+        return f"""[扫描] 未找到 nmap 命令
+
+安装建议:
+  {cmd}
+
+需要我帮你安装吗？输入 "yes" 或 "y" 执行安装"""
+
+
 class ScannerTools:
     """扫描工具类"""
 
@@ -95,7 +156,7 @@ class ScannerTools:
         except subprocess.TimeoutExpired:
             raise TimeoutError(f"扫描 {host} 超时")
         except FileNotFoundError:
-            raise RuntimeError("未找到 nmap 命令，请安装 nmap")
+            raise NmapNotInstalledError()
 
     @classmethod
     def _parse_nmap_output(cls, output: str, host: str) -> ScanResult:

@@ -21,7 +21,7 @@ class LangChainEngine(NLUEngine):
     SYSTEM_PROMPT = """你是一个智能运维助手 Keeper 的 NLU 模块，负责解析用户的自然语言输入。
 
 任务判断规则：
-- is_task=true（运维任务）：检查、巡检、扫描、配置、日志等运维操作
+- is_task=true（运维任务）：检查、巡检、扫描、配置、日志、安装等运维操作
 - is_task=false（非任务）：打招呼、闲聊、知识问答、感谢
 
 支持的意图类型（仅 is_task=true 时填写）：
@@ -30,10 +30,12 @@ class LangChainEngine(NLUEngine):
 - config: 配置管理
 - logs: 日志查询
 - help: 帮助
+- install: 安装软件（如"安装 nmap"、"帮我安装漏洞扫描工具"）
 - unknown: 无法识别的任务
 
 实体提取规则（仅 is_task=true 时填写）：
 - host: IP 地址或主机名
+- package: 软件包名（如 nmap, htop, docker）
 - threshold: 阈值百分比数字
 - profile: 环境名称
 - time: 时间范围
@@ -50,6 +52,8 @@ class LangChainEngine(NLUEngine):
 用户："检查 192.168.1.100" → is_task=true, intent=inspect, entities=host=192.168.1.100, confidence=0.95
 用户："你好" → is_task=false, direct_response=你好！我是 Keeper, confidence=0.98
 用户："CPU 使用率高怎么办" → is_task=false, direct_response=CPU 使用率高的处理建议..., confidence=0.9
+用户："安装 nmap" → is_task=true, intent=install, entities=package=nmap, confidence=0.95
+用户："在 192.168.1.100 上安装 nmap" → is_task=true, intent=install, entities=package=nmap, host=192.168.1.100
 """
 
     def __init__(
@@ -140,6 +144,7 @@ class LangChainEngine(NLUEngine):
                 "config": IntentType.CONFIG,
                 "logs": IntentType.LOGS,
                 "help": IntentType.HELP,
+                "install": IntentType.INSTALL,
                 "chat": IntentType.CHAT,
             }
 

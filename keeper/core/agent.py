@@ -5,7 +5,8 @@ from ..nlu.base import NLUEngine, ParsedIntent, IntentType
 from ..nlu.langchain_engine import LangChainEngine
 from ..config import AppConfig
 from ..tools.server import ServerTools, format_status_report
-from ..tools.scanner import ScannerTools, format_scan_result
+from ..tools.scanner import ScannerTools, format_scan_result, NmapNotInstalledError
+from ..tools.ssh import SSHTools, SSHConfig
 
 
 class Agent:
@@ -74,6 +75,7 @@ class Agent:
             IntentType.CONFIG: self._handle_config,
             IntentType.LOGS: self._handle_logs,
             IntentType.HELP: self._handle_help,
+            IntentType.INSTALL: self._handle_install,
             IntentType.CHAT: self._handle_chat,
             IntentType.UNKNOWN: self._handle_unknown,
         }
@@ -125,12 +127,72 @@ class Agent:
             self.state.context.current_host = host
 
             return report
+        except NmapNotInstalledError:
+            return NmapNotInstalledError.get_help_message()
         except RuntimeError as e:
             return f"[扫描] {str(e)}"
         except TimeoutError as e:
             return f"[扫描] 扫描超时：{str(e)}"
         except Exception as e:
             return f"[扫描] 扫描失败：{str(e)}"
+
+    def _handle_install(self, entities: Dict[str, Any]) -> str:
+        """处理安装软件意图"""
+        package = entities.get("package") or "nmap"
+        host = entities.get("host")
+
+        if not host:
+            # 本地安装
+            cmd = NmapNotInstalledError.get_install_command()
+            return f"""[安装] 请在本地执行以下命令安装 {package}:
+
+  {cmd}
+
+或者在云主机上安装，请提供主机地址，例如:
+  "在 192.168.1.100 上安装 nmap"
+  "帮我远程安装 nmap 到生产服务器"
+"""
+        else:
+            # 远程安装
+            return self._remote_install(host, package)
+
+    def _remote_install(self, host: str, package: str) -> str:
+        """远程安装软件"""
+        # 测试 SSH 连接
+        if not SSHTools.test_connection(host):
+            return f"""[连接] 无法连接到 {host}
+
+请检查:
+1. 主机是否在线
+2. SSH 服务是否运行 (端口 22)
+3. 防火墙设置
+4. SSH 密钥/密码配置
+
+示例命令:
+  ssh root@{host}
+"""
+
+        # 执行安装
+        success, output = SSHTools.execute(
+            SSHConfig(host=host),
+            f"sudo apt-get update && sudo apt-get install -y {package}"
+        )
+
+        if success:
+            return f"""[安装] ✓ {package} 已在 {host} 上成功安装
+
+{output[:500]}
+"""
+        else:
+            return f"""[安装] ✗ {package} 安装失败
+
+{output}
+
+可能原因:
+1. 权限不足 (需要 sudo)
+2. 包管理器不可用
+3. 网络连接问题
+"""
 
     def _handle_config(self, entities: Dict[str, Any]) -> str:
         """处理配置管理意图"""
