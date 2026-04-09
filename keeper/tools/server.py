@@ -4,6 +4,7 @@ import socket
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Any
 from datetime import datetime
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 
 @dataclass
@@ -23,6 +24,7 @@ class ServerStatus:
     load_avg_15m: float
     boot_time: str
     top_processes: List[Dict[str, Any]]
+    ssh_failed: bool = False  # 标记 SSH 采集是否失败
 
 
 class ServerTools:
@@ -129,8 +131,97 @@ class ServerTools:
                 top_processes=cls.get_top_processes(5),
             )
         else:
-            # TODO: 远程主机采集（需要 SSH 或 Agent）
-            raise NotImplementedError(f"远程主机 {host} 的采集功能尚未实现")
+            # 远程主机采集（通过 SSH）
+            from .ssh import SSHTools, SSHConfig
+            ssh_config = SSHConfig(host=host)
+            success, status_dict = SSHTools.collect_server_status(ssh_config)
+
+            if success and status_dict:
+                return ServerStatus(
+                    host=status_dict.get("host", host),
+                    timestamp=status_dict.get("timestamp", ""),
+                    cpu_percent=status_dict.get("cpu_percent", 0),
+                    memory_percent=status_dict.get("memory_percent", 0),
+                    memory_used_gb=status_dict.get("memory_used_gb", 0),
+                    memory_total_gb=status_dict.get("memory_total_gb", 0),
+                    disk_percent=status_dict.get("disk_percent", 0),
+                    disk_used_gb=status_dict.get("disk_used_gb", 0),
+                    disk_total_gb=status_dict.get("disk_total_gb", 0),
+                    load_avg_1m=status_dict.get("load_avg_1m", 0),
+                    load_avg_5m=status_dict.get("load_avg_5m", 0),
+                    load_avg_15m=status_dict.get("load_avg_15m", 0),
+                    boot_time=status_dict.get("boot_time", ""),
+                    top_processes=status_dict.get("top_processes", []),
+                )
+            else:
+                # SSH 采集失败，返回标记状态
+                return ServerStatus(
+                    host=host,
+                    timestamp=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                    cpu_percent=0,
+                    memory_percent=0,
+                    memory_used_gb=0,
+                    memory_total_gb=0,
+                    disk_percent=0,
+                    disk_used_gb=0,
+                    disk_total_gb=0,
+                    load_avg_1m=0,
+                    load_avg_5m=0,
+                    load_avg_15m=0,
+                    boot_time="",
+                    top_processes=[],
+                    ssh_failed=True,
+                )
+
+    @classmethod
+    def inspect_multiple_hosts(cls, hosts: List[str], max_workers: int = 10) -> List[ServerStatus]:
+        """批量巡检多台主机
+
+        Args:
+            hosts: 主机 IP 列表
+            max_workers: 最大并发数
+
+        Returns:
+            服务器状态列表
+        """
+        results = []
+
+        def inspect_host(host: str) -> ServerStatus:
+            """单个主机采集函数"""
+            return cls.inspect_server(host)
+
+        # 使用线程池并行采集
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            # 提交所有任务
+            future_to_host = {executor.submit(inspect_host, host): host for host in hosts}
+
+            # 收集结果
+            for future in as_completed(future_to_host):
+                host = future_to_host[future]
+                try:
+                    status = future.result()
+                    results.append(status)
+                except Exception as e:
+                    # 异常情况，返回失败状态
+                    results.append(ServerStatus(
+                        host=host,
+                        timestamp=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                        cpu_percent=0,
+                        memory_percent=0,
+                        memory_used_gb=0,
+                        memory_total_gb=0,
+                        disk_percent=0,
+                        disk_used_gb=0,
+                        disk_total_gb=0,
+                        load_avg_1m=0,
+                        load_avg_5m=0,
+                        load_avg_15m=0,
+                        boot_time="",
+                        top_processes=[],
+                        ssh_failed=True,
+                    ))
+
+        return results
 
 
 def format_status_report(status: ServerStatus, thresholds: Dict[str, int]) -> str:
@@ -143,6 +234,10 @@ def format_status_report(status: ServerStatus, thresholds: Dict[str, int]) -> st
     Returns:
         str: 格式化的报告文本
     """
+    # SSH 失败情况
+    if status.ssh_failed:
+        return f"[✗] 无法连接到 {status.host} - SSH 采集失败\n\n可能原因:\n  1. SSH 未配置或连接失败\n  2. 远程主机未安装 psutil\n  3. 防火墙阻止连接"
+
     lines = []
     lines.append(f"[✓] 服务器健康检查 - {status.host}")
     lines.append("━" * 40)
@@ -194,5 +289,85 @@ def format_status_report(status: ServerStatus, thresholds: Dict[str, int]) -> st
         lines.append("状态：✅ 所有指标正常")
     else:
         lines.append(f"状态：⚠️ 发现 {issues} 项异常")
+
+    return "\n".join(lines)
+
+
+def format_batch_report(statuses: List[ServerStatus], thresholds: Dict[str, int]) -> str:
+    """格式化批量巡检报告
+
+    Args:
+        statuses: 服务器状态列表
+        thresholds: 阈值配置
+
+    Returns:
+        str: 格式化的批量报告文本
+    """
+    lines = []
+    lines.append("┌" + "─" * 68 + "┐")
+    lines.append("│" + " " * 20 + "批量服务器健康检查" + " " * 26 + "│")
+    lines.append("└" + "─" * 68 + "┘")
+    lines.append("")
+
+    # 汇总表格
+    lines.append("汇总:")
+    lines.append("━" * 70)
+    lines.append(f"{'主机':<20} {'CPU%':<8} {'内存%':<8} {'磁盘%':<8} {'负载':<10} {'状态':<8}")
+    lines.append("━" * 70)
+
+    success_count = 0
+    failed_count = 0
+
+    for status in statuses:
+        if status.ssh_failed:
+            lines.append(f"{status.host:<20} {'-':<8} {'-':<8} {'-':<8} {'-':<10} {'❌ 失败':<8}")
+            failed_count += 1
+        else:
+            # 判断是否健康
+            cpu_ok = status.cpu_percent < thresholds.get("cpu", 80)
+            mem_ok = status.memory_percent < thresholds.get("memory", 85)
+            disk_ok = status.disk_percent < thresholds.get("disk", 90)
+            health_icon = "✅" if (cpu_ok and mem_ok and disk_ok) else "⚠️"
+
+            lines.append(f"{status.host:<20} {status.cpu_percent:<8.1f} {status.memory_percent:<8.1f} "
+                        f"{status.disk_percent:<8.1f} {status.load_avg_1m:<10.2f} {health_icon:<8}")
+            success_count += 1
+
+    lines.append("━" * 70)
+    lines.append(f"总计：{len(statuses)} 台主机 | ✅ 成功：{success_count} 台 | ❌ 失败：{failed_count} 台")
+    lines.append("")
+
+    # 失败主机详情
+    if failed_count > 0:
+        lines.append("⚠️  失败主机提醒:")
+        lines.append("   以下主机无法通过 SSH 采集，请检查 SSH 免密登录配置：")
+        for status in statuses:
+            if status.ssh_failed:
+                lines.append(f"   - {status.host}")
+        lines.append("")
+        lines.append("   配置步骤:")
+        lines.append("   1. 生成密钥：ssh-keygen -t rsa")
+        lines.append("   2. 分发密钥：ssh-copy-id root@<IP>")
+        lines.append("   3. 确保远程主机已安装 psutil: pip install psutil")
+        lines.append("")
+
+    # 只显示成功主机的详情（前 3 台）
+    success_statuses = [s for s in statuses if not s.ssh_failed]
+    if success_statuses:
+        lines.append("详细报告 (前 3 台):")
+        lines.append("")
+        for status in success_statuses[:3]:
+            report = format_status_report(status, thresholds)
+            lines.append(report)
+            lines.append("")
+
+    # 如果全部失败
+    if not success_statuses:
+        lines.append("🔍 建议:")
+        lines.append("   所有主机采集失败，正在仅巡检本机...")
+        lines.append("")
+        local_status = ServerTools.inspect_server("localhost")
+        report = format_status_report(local_status, thresholds)
+        lines.append(report)
 
     return "\n".join(lines)

@@ -5,7 +5,7 @@ from .context import ContextManager, MemoryManager, AgentState
 from ..nlu.base import NLUEngine, ParsedIntent, IntentType
 from ..nlu.langchain_engine import LangChainEngine
 from ..config import AppConfig
-from ..tools.server import ServerTools, format_status_report
+from ..tools.server import ServerTools, format_status_report, format_batch_report
 from ..tools.scanner import ScannerTools, format_scan_result, NmapNotInstalledError
 from ..tools.ssh import SSHTools, SSHConfig
 
@@ -101,22 +101,46 @@ class Agent:
 
     def _handle_inspect(self, entities: Dict[str, Any]) -> str:
         """处理服务器巡检意图"""
-        host = entities.get("host") or self.state.context.current_host or "localhost"
+        host = entities.get("host")
+        all_hosts = entities.get("all_hosts", False)  # 是否巡检所有主机
+        profile = entities.get("profile") or self.state.context.current_profile
 
         # 获取阈值配置
-        profile = entities.get("profile") or self.state.context.current_profile
         thresholds = {
             "cpu": self.config.get_threshold("cpu", profile),
             "memory": self.config.get_threshold("memory", profile),
             "disk": self.config.get_threshold("disk", profile),
         }
 
+        # 多主机批量巡检
+        if all_hosts:
+            from ..tools.ssh import SSHTools
+            hosts = SSHTools.get_hosts_from_file("/etc/hosts")
+
+            if not hosts:
+                # /etc/hosts 没有配置，只巡检本机
+                return "[巡检] /etc/hosts 中没有找到可巡检的主机\n\n请确保 /etc/hosts 中配置了待巡检主机的 IP 地址，或指定具体主机 IP 进行巡检。"
+
+            # 批量巡检
+            try:
+                statuses = ServerTools.inspect_multiple_hosts(hosts)
+                report = format_batch_report(statuses, thresholds)
+
+                # 更新上下文
+                self.state.context.current_host = "batch"
+                return report
+            except Exception as e:
+                return f"[巡检] 批量巡检失败：{str(e)}"
+
+        # 单主机巡检
+        target_host = host or self.state.context.current_host or "localhost"
+
         try:
-            status = ServerTools.inspect_server(host)
+            status = ServerTools.inspect_server(target_host)
             report = format_status_report(status, thresholds)
 
             # 更新上下文
-            self.state.context.current_host = host
+            self.state.context.current_host = target_host
 
             return report
         except NotImplementedError as e:

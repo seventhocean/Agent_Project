@@ -1,7 +1,8 @@
 """SSH 远程执行工具"""
 import subprocess
+import json
 from dataclasses import dataclass
-from typing import Optional, Tuple
+from typing import Optional, Tuple, List, Dict, Any
 
 
 @dataclass
@@ -110,6 +111,108 @@ class SSHTools:
         if success:
             return output
         return "未知系统"
+
+    @classmethod
+    def collect_server_status(cls, config: SSHConfig) -> Tuple[bool, Optional[Dict[str, Any]]]:
+        """通过 SSH 采集服务器状态
+
+        Args:
+            config: SSH 配置
+
+        Returns:
+            (成功标志，状态字典或 None)
+        """
+        # Python 采集脚本（base64 编码避免转义问题）
+        python_script = '''
+import psutil
+import socket
+import json
+from datetime import datetime
+
+def get_info():
+    mem = psutil.virtual_memory()
+    disk = psutil.disk_usage("/")
+    try:
+        load1, load5, load15 = psutil.getloadavg()
+    except:
+        load1 = load5 = load15 = psutil.cpu_percent() / 100.0
+
+    processes = []
+    for proc in psutil.process_iter(["pid", "name", "memory_percent"]):
+        try:
+            info = proc.info
+            processes.append({
+                "pid": info["pid"],
+                "name": info["name"],
+                "memory_percent": info["memory_percent"] or 0,
+            })
+        except:
+            continue
+    processes.sort(key=lambda x: x["memory_percent"], reverse=True)
+
+    return {
+        "host": socket.gethostname(),
+        "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "cpu_percent": psutil.cpu_percent(interval=0.5),
+        "memory_percent": mem.percent,
+        "memory_used_gb": mem.used / (1024 ** 3),
+        "memory_total_gb": mem.total / (1024 ** 3),
+        "disk_percent": disk.percent,
+        "disk_used_gb": disk.used / (1024 ** 3),
+        "disk_total_gb": disk.total / (1024 ** 3),
+        "load_avg_1m": load1,
+        "load_avg_5m": load5,
+        "load_avg_15m": load15,
+        "boot_time": datetime.fromtimestamp(psutil.boot_time()).strftime("%Y-%m-%d %H:%M:%S"),
+        "top_processes": processes[:5],
+    }
+
+print(json.dumps(get_info()))
+'''
+
+        # 通过 SSH 执行 Python 脚本
+        cmd = f"python3 -c \"{python_script.replace(chr(10), ';')}\""
+        success, output = cls.execute(config, cmd)
+
+        if not success:
+            return False, None
+
+        try:
+            # 解析 JSON 输出
+            status_dict = json.loads(output.strip())
+            return True, status_dict
+        except (json.JSONDecodeError, Exception):
+            return False, None
+
+    @classmethod
+    def get_hosts_from_file(cls, hosts_file: str = "/etc/hosts") -> List[str]:
+        """从 hosts 文件读取主机列表
+
+        Args:
+            hosts_file: hosts 文件路径
+
+        Returns:
+            主机 IP 列表
+        """
+        hosts = []
+        try:
+            with open(hosts_file, 'r') as f:
+                for line in f:
+                    line = line.strip()
+                    # 跳过注释和空行
+                    if not line or line.startswith('#'):
+                        continue
+                    # 解析 hosts 格式：IP  hostname [alias...]
+                    parts = line.split()
+                    if len(parts) >= 2:
+                        ip = parts[0]
+                        # 跳过 IPv6 和本地回环
+                        if ':' in ip or ip == '127.0.0.1':
+                            continue
+                        hosts.append(ip)
+        except (FileNotFoundError, PermissionError):
+            return []
+        return hosts
 
 
 def format_ssh_result(success: bool, output: str, command: str) -> str:

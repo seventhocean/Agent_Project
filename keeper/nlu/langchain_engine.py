@@ -42,6 +42,7 @@ class LangChainEngine(NLUEngine):
 - profile: 环境名称
 - action: 动作（set, get, show, update）
 - time: 时间范围
+- all_hosts: 布尔值，当用户说"所有主机"、"批量巡检"、"全部检查"时为 true
 
 直接回复规则（仅 is_task=false 时填写）：
 - 友好、简洁
@@ -59,6 +60,9 @@ class LangChainEngine(NLUEngine):
 用户："yes" → is_task=true, intent=confirm, confidence=0.95
 用户："把 CPU 阈值设置为 80%" → is_task=true, intent=config, entities={{"action":"set","metric":"cpu","threshold":80}}
 用户："阈值改为 80" → is_task=true, intent=config, entities={{"action":"set","threshold":80}}
+用户："批量巡检所有主机" → is_task=true, intent=inspect, entities={{"all_hosts":true}}, confidence=0.95
+用户："检查所有机器" → is_task=true, intent=inspect, entities={{"all_hosts":true}}, confidence=0.95
+用户："看看 /etc/hosts 里的所有主机" → is_task=true, intent=inspect, entities={{"all_hosts":true}}, confidence=0.9
 """
 
     def __init__(

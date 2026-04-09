@@ -115,12 +115,24 @@ keeper config clear
 ## 待实现功能
 
 ### Phase 2 - 增强功能
+- [x] 多主机批量巡检 (2026-04-09 完成)
+- [x] SSH 远程采集 (2026-04-09 完成)
 - [ ] 报告生成 (JSON/HTML)
-- [ ] 多主机批量巡检
-- [ ] SSH 远程采集
-- [ ] 审计日志
+- [ ] 审计日志持久化
 - [ ] 系统日志查询 (journalctl, /var/log)
 - [ ] 容器日志查询
+
+### Phase 2 已实现功能详情
+
+#### 多主机批量巡检
+- **命令**: `keeper run 批量巡检` 或 `keeper run 检查所有主机`
+- **实现**: 从 `/etc/hosts` 读取主机列表，并行采集多台主机状态
+- **文件**: `keeper/tools/ssh.py` (get_hosts_from_file), `keeper/tools/server.py` (inspect_multiple_hosts)
+
+#### SSH 远程采集
+- **实现**: 通过 SSH 执行 Python 脚本采集远程主机资源状态
+- **要求**: 远程主机需配置 SSH 免密登录并安装 psutil
+- **文件**: `keeper/tools/ssh.py` (collect_server_status)
 
 ### Phase 3 - K8s 集群巡检 (自建单集群)
 - [ ] K8s 客户端封装 (kubernetes Python SDK)
