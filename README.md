@@ -8,7 +8,7 @@
 - 轻量化的智能运维助手
 - 通过自然语言对话完成服务器巡检、漏洞扫描、异常诊断
 - 基于 LangChain + LLM 实现自然语言理解
-- **MVP 状态：** ✅ 基础框架已完成 (2026-04-08)
+- **版本：** v0.2.0 (2026-04-09)
 
 ---
 
@@ -165,18 +165,40 @@ keeper> 扫描 192.168.1.100 的安全漏洞
 2. MySQL 绑定 0.0.0.0 (建议限制 IP)
 ```
 
-### 5. 配置管理
+### 5. 报告导出
 
-支持多环境配置，通过对话修改：
+巡检完成后可导出为多种格式：
 
 ```
-keeper> 切换到 dev 环境
-已切换到 dev 环境
+keeper> 导出为 JSON
+[报告] JSON 报告已保存至: ./keeper_report_20260409_103000.json
 
-keeper> 显示当前配置
-当前环境：dev
-主机列表：localhost
-阈值配置：CPU=90%, 内存=90%, 磁盘=95%
+keeper> 生成 HTML 报告
+[报告] HTML 报告已保存至: ./keeper_report_20260409_103000.html
+
+keeper> 保存为 Markdown
+[报告] Markdown 报告已保存至: ./keeper_report_20260409_103000.md
+```
+
+### 6. 系统日志查询
+
+支持查询系统日志、容器日志等：
+
+```
+keeper> 查看系统日志
+keeper> 查看 Nginx 的访问日志
+keeper> 查看 nginx 容器日志
+keeper> 查看 /var/log/syslog 最后 100 行
+```
+
+### 7. 审计日志
+
+所有操作自动记录，支持查询历史：
+
+```
+keeper> 查看最近的操作记录
+keeper> 过去 24 小时做了什么？
+keeper> 查看对 192.168.1.100 的操作
 ```
 
 ---
@@ -207,6 +229,9 @@ keeper config set --api-key xxx           # 设置 API Key
 keeper config show                        # 查看配置
 keeper config clear                       # 清除配置
 keeper status                             # 显示当前状态
+keeper logs --hours 24                    # 查看操作记录
+keeper logs --host 192.168.1.100          # 按主机过滤
+keeper logs --json                        # JSON 格式输出
 ```
 
 ### 支持的意图
@@ -216,7 +241,8 @@ keeper status                             # 显示当前状态
 | inspect | 服务器巡检 | "检查 192.168.1.100", "看看这台机器健康吗" |
 | scan | 漏洞扫描 | "扫描漏洞", "检查有没有安全问题" |
 | config | 配置管理 | "保存配置", "切换到 production" |
-| logs | 日志查询 | "查看最近的操作", "显示昨天的告警" |
+| logs | 日志查询 | "查看最近操作", "查看系统日志" |
+| export | 报告导出 | "导出为 JSON", "生成 HTML 报告" |
 | help | 帮助 | "你能做什么？", "帮助" |
 | chat | 闲聊/知识问答 | "你好", "CPU 使用率高怎么办" |
 
@@ -248,15 +274,21 @@ keeper status                             # 显示当前状态
 │   │   └── langchain_engine.py  # LangChain 引擎实现
 │   ├── core/
 │   │   ├── agent.py      # Agent 核心
-│   │   └── context.py    # 上下文管理 + 记忆系统
+│   │   ├── context.py    # 上下文管理 + 记忆系统
+│   │   └── audit.py      # 审计日志持久化
 │   └── tools/
 │       ├── server.py     # 服务器工具 (psutil)
-│       └── scanner.py    # 扫描工具 (Nmap)
+│       ├── scanner.py    # 扫描工具 (Nmap)
+│       ├── ssh.py        # SSH 远程采集
+│       ├── reporter.py   # 报告导出 (JSON/HTML/MD)
+│       └── logs.py       # 系统日志查询
 ├── tests/
-│   └── test_keeper.py    # 单元测试
+│   ├── test_keeper.py    # 核心测试
+│   ├── test_audit.py     # 审计日志测试
+│   ├── test_reporter.py  # 报告导出测试
+│   └── test_logs.py      # 日志查询测试
 ├── keeper_entry.py       # 入口脚本
 ├── pyproject.toml        # 项目配置
-├── requirements.txt      # 依赖列表
 └── README.md
 ```
 
@@ -391,21 +423,23 @@ profiles:
 
 ### Phase 1 - MVP (已完成 ✅)
 - [x] CLI 框架搭建 (Click + Prompt Toolkit)
-- [x] 交互模式入口 (`keeper` 命令)
+- [x] 交互模式入口 (`keeper` 命令，无子命令直接进入对话)
 - [x] LangChain NLU 引擎（支持任务/闲聊判断）
 - [x] 服务器资源巡检 (psutil)
 - [x] 对话记忆系统
 - [x] 配置管理（分离敏感信息）
 - [x] 单元测试
 - [x] 漏洞扫描集成 (Nmap)
+- [x] CLI 入口优化（`keeper` 直接进入交互模式）
 
-### Phase 2 - 增强功能
-- [ ] 报告生成 (JSON/HTML)
-- [ ] 多主机批量巡检
-- [ ] SSH 远程采集
-- [ ] 审计日志 (audit.log)
-- [ ] 系统日志查询 (journalctl, /var/log)
-- [ ] 容器日志查询 (docker logs, kubectl logs)
+### Phase 2 - 增强功能 (已完成 ✅)
+- [x] 报告生成 (JSON/HTML/Markdown)
+- [x] 多主机批量巡检
+- [x] SSH 远程采集
+- [x] 审计日志持久化 (audit.log)
+- [x] 系统日志查询 (journalctl, /var/log)
+- [x] 容器日志查询 (docker logs)
+- [x] 31 个测试用例全部通过
 
 ### Phase 3 - K8s 集群巡检 (自建单集群)
 - [ ] K8s 客户端封装 (kubernetes Python SDK)
@@ -456,13 +490,16 @@ black --check keeper/
 ## 常见问题
 
 **Q: 如何在本地测试？**
-A: 使用 `keeper chat` 进入交互模式，或运行 `keeper run 检查 localhost`
+A: 使用 `keeper` 进入交互模式，或运行 `keeper run 检查 localhost`
 
 **Q: 配置文件在哪里？**
 A: `~/.keeper/config.yaml`，首次运行 `keeper init` 自动创建
 
-**Q: 如何查看日志？**
-A: `keeper run 查看最近日志` 或查看 `~/.keeper/` 目录
+**Q: 如何查看操作记录？**
+A: `keeper logs --hours 24` 或对话中输入 "查看最近的操作记录"
+
+**Q: 如何导出巡检报告？**
+A: 对话中说 "导出为 JSON" 或 "生成 HTML 报告"，也可命令行 `keeper run 巡检 --export json`
 
 **Q: 支持哪些 LLM？**
 A: 支持 OpenAI 兼容 API 和 Anthropic API，推荐使用 `doubao-seed-2.0-mini`
@@ -470,8 +507,8 @@ A: 支持 OpenAI 兼容 API 和 Anthropic API，推荐使用 `doubao-seed-2.0-mi
 **Q: 没有 API Key 能用吗？**
 A: 需要配置 LLM API Key 才能使用自然语言理解功能
 
-**Q: 如何添加远程主机？**
-A: 当前 MVP 仅支持本地巡检，远程主机功能在 Phase 2 实现
+**Q: 如何查看系统日志？**
+A: 对话中说 "查看系统日志" 或 "查看 Nginx 的访问日志"，也可命令行 `keeper logs system --lines 50`
 
 ---
 
