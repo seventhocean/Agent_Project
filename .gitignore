@@ -54,6 +54,7 @@ coverage.xml
 .env
 .venv
 .envrc
+claude-session
 
 # IDE
 .idea/
