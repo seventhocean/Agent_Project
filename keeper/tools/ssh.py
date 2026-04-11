@@ -1,6 +1,7 @@
 """SSH 远程执行工具"""
 import subprocess
 import json
+import base64
 from dataclasses import dataclass
 from typing import Optional, Tuple, List, Dict, Any
 
@@ -170,8 +171,9 @@ def get_info():
 print(json.dumps(get_info()))
 '''
 
-        # 通过 SSH 执行 Python 脚本
-        cmd = f"python3 -c \"{python_script.replace(chr(10), ';')}\""
+        # 通过 SSH 执行 Python 脚本（base64 编码避免转义问题）
+        script_b64 = base64.b64encode(python_script.encode()).decode()
+        cmd = f"python3 -c \"import base64,json; exec(base64.b64decode('{script_b64}').decode())\""
         success, output = cls.execute(config, cmd)
 
         if not success:
