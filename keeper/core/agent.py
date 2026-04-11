@@ -2018,12 +2018,24 @@ class Agent:
         # 过滤掉 send_notify 本身的记录，找到最近一次成功操作
         last_record = None
         for record in records:
-            if record.intent != "send_notify" and record.result == "success" and record.response:
-                last_record = record
-                break
+            # 跳过推送通知本身
+            if record.intent == "send_notify":
+                continue
+            # 跳过错误和空响应
+            if record.result != "success" or not record.response:
+                continue
+            # 跳过短消息（少于 3 行或少于 30 字符，通常是 CLI 提示）
+            lines = record.response.split("\n")
+            if len(lines) < 3 and len(record.response) < 30:
+                continue
+            # 跳过已处理/通知类消息
+            if record.response.startswith("[通知]") or "[Docker] 未找到" in record.response:
+                continue
+            last_record = record
+            break
 
         if not last_record:
-            return "[通知] 暂无操作记录，请先执行一些操作再推送。"
+            return "[通知] 暂无可推送的内容\n\n提示：短消息（如'未找到容器'）不会推送到飞书，请先执行巡检等操作。"
 
         notifier = FeishuNotifier(webhook, nc.get("feishu_secret"))
 
