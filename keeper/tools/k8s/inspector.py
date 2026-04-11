@@ -364,9 +364,6 @@ class K8sInspector:
             elif phase == "Unknown":
                 issues.append("Pod 状态未知")
 
-            if restarts > 0:
-                issues.append(f"容器重启 {restarts} 次")
-
             # 检查容器状态
             for cs in (pod.status.container_statuses or []):
                 if cs.state.waiting:
@@ -382,6 +379,13 @@ class K8sInspector:
                 if cs.last_state and cs.last_state.terminated:
                     if cs.last_state.terminated.reason == "OOMKilled":
                         issues.append(f"容器 {cs.name}: 曾发生 OOMKilled")
+
+            # 重启次数过高才标记为问题（Running 状态下少量重启是正常的）
+            if restarts >= 5:
+                issues.append(f"容器重启 {restarts} 次 (频繁重启)")
+            elif restarts > 0 and phase == "Running":
+                # Running 状态下少量重启仅记录，不标记为异常
+                pass
 
             results.append(K8sPodStatus(
                 name=pod.metadata.name,
