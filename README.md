@@ -8,36 +8,43 @@
 - 轻量化的智能运维助手
 - 通过自然语言对话完成服务器巡检、漏洞扫描、异常诊断
 - 基于 LangChain + LLM 实现自然语言理解
-- **版本：** v0.3.0 (2026-04-11)
+- **版本：** v0.4.0-dev (2026-04-11)
 
 ---
 
 ## 快速开始
 
-### 1. 创建虚拟环境
+### 一键安装（推荐）
 
 ```bash
-python -m venv venv
-source venv/bin/activate  # Linux/Mac
-# 或
-venv\Scripts\activate     # Windows
+curl -sSL https://raw.githubusercontent.com/Winter-wyh1314/Keeper/main/install.sh | bash
 ```
 
-### 2. 安装依赖
+自动检测 Python → 创建隔离环境 → 安装依赖 → 注册命令。开箱即用！
+
+### 手动安装（开发模式）
 
 ```bash
-pip install -r requirements.txt
-# 或以可编辑模式安装
+git clone https://github.com/Winter-wyh1314/Keeper.git
+cd Keeper
+python -m venv venv
+source venv/bin/activate  # Linux/Mac
 pip install -e .
 ```
 
-### 3. 初始化配置
+### 初始化配置
 
 ```bash
 keeper init
 ```
 
-### 4. 配置 API Key
+### 初始化配置
+
+```bash
+keeper init
+```
+
+### 配置 API Key
 
 ```bash
 # 使用 qnaigc (OpenAI 兼容)
@@ -58,6 +65,8 @@ keeper config show
 
 ### 5. 启动 Agent
 
+> 一键安装的用户可直接运行 `keeper`，无需手动激活虚拟环境。
+
 ```bash
 keeper
 ```
@@ -66,7 +75,7 @@ keeper
 
 ```
 ┌─────────────────────────────────────────┐
-│  Keeper v0.3 - 智能运维助手              │
+│  Keeper v0.4.0-dev - 智能运维助手        │
 └─────────────────────────────────────────┘
 
 👋 你好！我是 Keeper，你的智能运维助手。
@@ -298,14 +307,23 @@ keeper k8s inspect --kubeconfig /etc/rancher/k3s/k3s.yaml  # 指定 kubeconfig
 │   └── tools/
 │       ├── server.py     # 服务器工具 (psutil)
 │       ├── scanner.py    # 扫描工具 (Nmap)
-│       ├── ssh.py        # SSH 远程采集 (base64 编码执行)
+│       ├── ssh.py        # SSH 远程采集
 │       ├── reporter.py   # 报告导出 (JSON/HTML/MD)
 │       ├── logs.py       # 系统日志查询
+│       ├── docker_tools.py  # Docker 容器管理
+│       ├── network.py    # 网络诊断 (ping/port/dns/http)
+│       ├── rca.py        # 根因分析引擎
+│       ├── fixer.py      # 自动修复建议
+│       ├── scheduler.py  # 定时任务管理
+│       ├── cert_monitor.py # SSL 证书监控
+│       ├── notify.py     # 飞书通知推送
+│       ├── alert.py      # 告警规则引擎
 │       └── k8s/
-│           ├── client.py       # K8s 客户端封装（自动检测 K3s/标准 K8s）
-│           ├── inspector.py    # K8s 集群巡检（评分 0-100）
+│           ├── client.py       # K8s 客户端封装
+│           ├── inspector.py    # K8s 集群巡检
 │           ├── formatter.py    # 巡检报告格式化
-│           └── logs.py         # Pod 日志查询 & exec
+│           ├── logs.py         # Pod 日志查询 & exec
+│           └── ops.py          # K8s 深度操作（扩缩容/重启/回滚）
 ├── tests/
 │   ├── test_keeper.py    # 核心测试
 │   ├── test_audit.py     # 审计日志测试
@@ -517,30 +535,46 @@ keeper k8s inspect --kubeconfig /path/to/config  # 指定 kubeconfig
 自动搜索 kubeconfig 路径（`/etc/rancher/k3s/k3s.yaml` → `~/.kube/config`），
 自动识别集群类型（k3s / 标准 K8s），无需手动配置。
 
-### Phase 4 - 智能分析与变更
-- [ ] 根因分析 (RCA) - 进程级/依赖链分析
-- [ ] 智能告警分析
-- [ ] 自动修复建议
-- [ ] 变更管理 (Deployment 扩缩容/重启)
-- [ ] 更多 LLM 提供商支持
+### Phase 4 - 智能分析与变更 (v0.4.0-dev)
+- [x] Docker 容器管理（列表/统计/镜像/清理/操作）
+- [x] 根因分析 (RCA) — 进程级/依赖链分析 + 双机对比
+- [x] 网络诊断（Ping/端口/DNS/HTTP/Traceroute）
+- [x] K8s 深度操作（扩缩容/重启/回滚/Exec）
+- [x] 定时任务管理（Cron 表达式）
+- [x] 自动修复建议（规则引擎 + LLM 生成 + 安全拦截）
+- [x] SSL/TLS 证书监控（本地文件/K8s Secret/域名）
+- [x] 飞书通知推送（Webhook + 签名校验）
+- [x] 告警规则引擎（阈值/异常/自动告警）
 
 ### Phase 5 - 安全与集成
-- [ ] 安全基线检查 (弱密码/端口暴露/证书过期)
-- [ ] 操作审计报表
-- [ ] 告警集成 (Prometheus Alertmanager)
-- [ ] IM 通知 (钉钉/企微/飞书)
+- [ ] 安全基线检查 (CIS Benchmark/弱密码/端口暴露)
+- [ ] 操作审计报表（定期生成）
+- [ ] Prometheus 告警集成
+- [ ] IM 通知扩展（钉钉/企业微信/Slack）
 
 ---
 
 ## 开发环境
 
+### 一键安装（用户）
+
 ```bash
+curl -sSL https://raw.githubusercontent.com/Winter-wyh1314/Keeper/main/install.sh | bash
+```
+
+### 开发者模式
+
+```bash
+# 克隆源码
+git clone https://github.com/Winter-wyh1314/Keeper.git
+cd Keeper
+
 # 创建虚拟环境
 python -m venv venv
 source venv/bin/activate
 
 # 安装开发依赖
-pip install -r requirements-dev.txt
+pip install -e ".[dev]"
 
 # 运行测试
 pytest tests/
@@ -550,9 +584,14 @@ flake8 keeper/
 black --check keeper/
 ```
 
+### 升级
+
 ---
 
 ## 常见问题
+
+**Q: 如何快速安装？**
+A: 一条命令：`curl -sSL https://raw.githubusercontent.com/Winter-wyh1314/Keeper/main/install.sh | bash`
 
 **Q: 如何在本地测试？**
 A: 使用 `keeper` 进入交互模式，或运行 `keeper run 检查 localhost`
