@@ -18,6 +18,7 @@ class AuditRecord:
     response_time_ms: int
     host: Optional[str] = None
     error_message: Optional[str] = None
+    response: Optional[str] = None  # Agent 响应内容
 
 
 class AuditLogger:
@@ -45,6 +46,7 @@ class AuditLogger:
         response_time_ms: int,
         host: Optional[str] = None,
         error_message: Optional[str] = None,
+        response: Optional[str] = None,
     ) -> None:
         """记录一次操作
 
@@ -65,6 +67,7 @@ class AuditLogger:
             response_time_ms=response_time_ms,
             host=host,
             error_message=error_message,
+            response=response,
         )
 
         # 以 JSON Lines 格式追加写入
@@ -119,16 +122,17 @@ class AuditLogger:
 
                     records.append(AuditRecord(**data))
 
-                    # 数量限制
-                    if len(records) >= limit:
-                        break
-
                 except (json.JSONDecodeError, KeyError):
                     # 跳过无效行
                     continue
 
         # 按时间倒序（最新的在前）
         records.sort(key=lambda r: r.timestamp, reverse=True)
+
+        # 应用限制
+        if limit > 0:
+            records = records[:limit]
+
         return records
 
     def search(

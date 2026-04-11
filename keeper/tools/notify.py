@@ -65,8 +65,9 @@ class FeishuNotifier:
         }
 
         for section in sections:
+            # 飞书卡片 div 元素使用 text 字段而非 fields
             content["card"]["elements"].append(
-                {"tag": "div", "fields": section}
+                {"tag": "div", "text": {"tag": "plain_text", "content": "\n".join(f["text"] for f in section)}}
             )
 
         if footer:

@@ -94,6 +94,7 @@ class Agent:
                 entities={},
                 result="success",
                 response_time_ms=response_time,
+                response=response,
             )
             return response
 
@@ -121,6 +122,7 @@ class Agent:
             response_time_ms=response_time,
             host=parsed.entities.get("host"),
             error_message=response if is_error else None,
+            response=response if not is_error else None,
         )
 
         # 7. 自动通知（所有任务都推送）
@@ -2011,22 +2013,28 @@ class Agent:
         if not webhook:
             return "[通知] 未配置飞书 Webhook\n\n请先配置: keeper notify config --feishu-webhook <url>"
 
-        # 从记忆中获取最近一次对话的响应
-        recent = self.state.memory.get_recent_turns(1)
-        if not recent:
-            return "[通知] 暂无对话记录，请先执行一些操作再推送。"
+        # 从审计日志获取最近一次成功的操作记录
+        records = self.audit.get_history(limit=10)
+        # 过滤掉 send_notify 本身的记录，找到最近一次成功操作
+        last_record = None
+        for record in records:
+            if record.intent != "send_notify" and record.result == "success" and record.response:
+                last_record = record
+                break
 
-        last_turn = recent[0]
+        if not last_record:
+            return "[通知] 暂无操作记录，请先执行一些操作再推送。"
+
         notifier = FeishuNotifier(webhook, nc.get("feishu_secret"))
 
-        icon = "🔴" if last_turn.intent in ("error", "unknown") else "🟢"
-        title = f"{icon} Keeper {last_turn.intent}"
+        icon = "🔴" if last_record.result == "error" else "🟢"
+        title = f"{icon} Keeper {last_record.intent}"
 
-        lines = last_turn.agent_response.split("\n")
+        lines = last_record.response.split("\n")
         summary_lines = [{"tag": "text", "text": line} for line in lines[:8]]
         sections = [summary_lines]
 
-        host = self.state.context.current_host
+        host = last_record.host or self.state.context.current_host
         if host:
             sections.append([{"tag": "text", "text": f"主机: {host}"}])
 
