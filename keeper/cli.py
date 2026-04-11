@@ -37,14 +37,14 @@ def create_agent(config: AppConfig) -> Agent:
 
     provider = provider_map.get(config.llm.provider, LLMProvider.OPENAI_COMPATIBLE)
 
-    # 创建 LLM 引擎
+    # 创建 LLM 引擎（延迟加载，快速路径无需初始化 LLM）
     engine = LangChainEngine(
         provider=provider,
         api_key=config.llm.api_key,
         base_url=config.llm.base_url,
         model=config.llm.model,
     )
-    engine.load()
+    # 不再在此处调用 load()，改为 parse() 时按需加载
 
     return Agent(nlu_engine=engine, config=config)
 

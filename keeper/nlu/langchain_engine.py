@@ -1,12 +1,103 @@
 """基于 LangChain 的 LLM 引擎"""
 import os
+import re
 import json
 from typing import Optional, Dict, List
 from .base import NLUEngine, ParsedIntent, IntentType
 
-from langchain_core.prompts import ChatPromptTemplate
-from langchain_openai import ChatOpenAI
-from langchain_anthropic import ChatAnthropic
+# LangChain imports are deferred — only loaded when fast path misses (saves ~1.4s startup)
+
+
+# ─── 快速路径规则：命中时跳过 LLM 调用 ─────────────────────────────────────────
+# (keyword_patterns, intent, entity_extractor)
+_FAST_PATTERNS = [
+    # 帮助
+    (re.compile(r"帮助|help|你能做什么|你有什么能力|能力列表"), IntentType.HELP, {}),
+    # 确认
+    (re.compile(r"^(yes|y|确认|执行|好的|好|ok|sure|继续)$", re.IGNORECASE), IntentType.CONFIRM, {}),
+    # 退出
+    (re.compile(r"^(退出|exit|quit|bye|再见)$", re.IGNORECASE), IntentType.CHAT, {}),
+    # 巡检本机
+    (re.compile(r"(检查|巡检|看看|查看).*(本机|本机状态|这台机器|本地|localhost|主机|我的(机器|服务器|电脑))"), IntentType.INSPECT, {"host": "localhost"}),
+    # 批量巡检
+    (re.compile(r"(批量|所有|全部|每台|每一台).*(巡检|检查|看)|检查.*所有.*(主机|机器|服务器)|巡检.*所有"), IntentType.INSPECT, {"all_hosts": True}),
+    # K8s 巡检
+    (re.compile(r"(k8s|K8s|k3s|K3s|kubernetes|集群).*(巡检|检查|状态|情况|看看)"), IntentType.K8S_INSPECT, {}),
+    (re.compile(r"(看看|查看|看看).*pod"), IntentType.K8S_INSPECT, {}),
+    # K8s 日志
+    (re.compile(r"(查看|看看).*(pod|Pod|POD).*(日志|log)"), IntentType.K8S_LOGS, {}),
+    # Docker 巡检/检查
+    (re.compile(r"(docker|Docker|容器).*(巡检|检查|状态|健康|有什么问题)"), IntentType.DOCKER_INSPECT, {"docker_action": "inspect"}),
+    # Docker 列表
+    (re.compile(r"(查看|看看).*(docker|Docker|容器)"), IntentType.DOCKER_INSPECT, {"docker_action": "list"}),
+    # Docker 镜像
+    (re.compile(r"docker.*(镜像|image|占用|大小)"), IntentType.DOCKER_INSPECT, {"docker_action": "images"}),
+    # Docker 清理
+    (re.compile(r"(清理|删除).*(docker|Docker|镜像|image)"), IntentType.DOCKER_INSPECT, {"docker_action": "prune"}),
+    # 漏洞扫描
+    (re.compile(r"(扫描|检查).*(漏洞|安全|CVE|端口)"), IntentType.SCAN, {}),
+    # 报告导出
+    (re.compile(r"(导出|生成|保存|下载).*(报告|结果|Report)"), IntentType.EXPORT, {}),
+    (re.compile(r"(json|html|markdown|md)", re.IGNORECASE), IntentType.EXPORT, {}),
+    # 日志查询
+    (re.compile(r"(查看|查询|显示|获取).*(日志|log|记录|操作记录|审计)"), IntentType.LOGS, {}),
+    (re.compile(r"(过去|最近|最近几天).*(做|操作|发生)"), IntentType.LOGS, {}),
+    # 配置管理
+    (re.compile(r"(配置|设置|修改|调整|切换|更改|保存配置|显示配置|查看配置)"), IntentType.CONFIG, {}),
+    # 安装软件
+    (re.compile(r"安装\s+\S+"), IntentType.INSTALL, {}),
+    # 网络诊断 - ping
+    (re.compile(r"(ping|测试.*延迟|延迟|延时)"), IntentType.NETWORK_DIAG, {"network_action": "ping"}),
+    # 网络诊断 - DNS
+    (re.compile(r"(dns|DNS|域名解析|解析.*正常)"), IntentType.NETWORK_DIAG, {"network_action": "dns"}),
+    # 证书检查
+    (re.compile(r"(证书|ssl|SSL|tls|TLS).*(检查|状态|过期)"), IntentType.CERT_CHECK, {}),
+    # 飞书通知
+    (re.compile(r"(飞书|发送.*飞书|推送.*飞书|推.*通知)"), IntentType.SEND_NOTIFY, {}),
+    # 定时任务
+    (re.compile(r"(定时|cron|每.*分钟|每.*小时|每天|每周).*(检查|巡检|任务)"), IntentType.SCHEDULE_TASK, {}),
+    # 自动修复
+    (re.compile(r"(帮我修复|自动修复|一键修复|修复.*问题|清理.*磁盘|处理.*服务器)"), IntentType.AUTO_FIX, {}),
+    # 根因分析
+    (re.compile(r"(分析.*为什么|根因|rca|排查.*问题|对比.*差异|为什么.*高|为什么.*慢)"), IntentType.RCA_ANALYSIS, {}),
+]
+
+
+def _extract_host(text: str) -> Optional[str]:
+    """从文本中提取 IP 地址"""
+    match = re.search(r"\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}", text)
+    return match.group(0) if match else None
+
+
+def _extract_port(text: str) -> Optional[int]:
+    """从文本中提取端口号"""
+    match = re.search(r"\b(\d{1,5})\s*端口", text)
+    if match:
+        port = int(match.group(1))
+        if 1 <= port <= 65535:
+            return port
+    return None
+
+
+def _try_fast_match(text: str) -> Optional[ParsedIntent]:
+    """快速规则匹配，命中则返回 ParsedIntent，否则返回 None"""
+    for pattern, intent, fixed_entities in _FAST_PATTERNS:
+        if pattern.search(text):
+            entities = dict(fixed_entities)
+            host = _extract_host(text)
+            if host:
+                entities["host"] = host
+            port = _extract_port(text)
+            if port:
+                entities["port"] = port
+            return ParsedIntent(
+                is_task=True,
+                intent=intent,
+                entities=entities,
+                confidence=0.9,
+                raw_input=text,
+            )
+    return None
 
 
 class LLMProvider:
@@ -182,6 +273,7 @@ class LangChainEngine(NLUEngine):
 
     def _init_openai(self) -> None:
         """初始化 OpenAI 兼容 API"""
+        from langchain_openai import ChatOpenAI
         self._llm = ChatOpenAI(
             model=self.model,
             api_key=self.api_key,
@@ -192,6 +284,7 @@ class LangChainEngine(NLUEngine):
 
     def _init_anthropic(self) -> None:
         """初始化 Anthropic API"""
+        from langchain_anthropic import ChatAnthropic
         self._llm = ChatAnthropic(
             model=self.model,
             api_key=self.api_key,
@@ -202,8 +295,17 @@ class LangChainEngine(NLUEngine):
 
     def parse(self, user_input: str, context: Optional[Dict] = None) -> ParsedIntent:
         """解析用户输入"""
+        # ─── 快速路径：本地规则匹配，跳过 LLM 调用 ───
+        fast = _try_fast_match(user_input)
+        if fast is not None:
+            return fast
+
+        # ─── 慢速路径：LLM 解析（延迟加载）───
         if not self._loaded:
-            raise RuntimeError("Engine not loaded. Call load() first.")
+            self.load()
+
+        from langchain_core.prompts import ChatPromptTemplate
+        from langchain_core.output_parsers import JsonOutputParser
 
         # 构建上下文信息
         context_info = ""
@@ -223,9 +325,6 @@ class LangChainEngine(NLUEngine):
             ("system", self.SYSTEM_PROMPT),
             ("human", "{input}{context}"),
         ])
-
-        # 使用 with_structured_output 解析 JSON
-        from langchain_core.output_parsers import JsonOutputParser
 
         chain = prompt | self._llm | JsonOutputParser()
 
