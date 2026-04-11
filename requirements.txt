@@ -17,3 +17,9 @@ psutil>=5.9
 
 # HTTP client
 httpx>=0.25.0
+
+# K8s SDK
+kubernetes>=28.0
+
+# Task scheduling
+schedule>=1.2

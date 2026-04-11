@@ -662,6 +662,291 @@ def k8s_events(namespace, kubeconfig):
         k8s_client.close()
 
 
+@k8s.command("exec")
+@click.argument('pod_name')
+@click.argument('command', nargs=-1)
+@click.option('--namespace', '-n', default='default', help='命名空间')
+@click.option('--container', '-c', type=str, help='容器名称')
+@click.option('--kubeconfig', type=str, help='kubeconfig 文件路径')
+def k8s_exec(pod_name, command, namespace, container, kubeconfig):
+    """在 Pod 中执行命令
+
+    示例:
+        keeper k8s exec my-pod -- ls /
+        keeper k8s exec nginx -n kube-system -- cat /etc/resolv.conf
+    """
+    config = AppConfig.from_env()
+    config.load()
+
+    from .tools.k8s.client import K8sClient, K8sClusterConfig
+    from .tools.k8s.ops import K8sOps
+
+    k8s_cfg_data = config.get_k8s_config()
+    k8s_cfg = K8sClusterConfig(
+        kubeconfig_path=kubeconfig or k8s_cfg_data.get("kubeconfig", ""),
+        context=k8s_cfg_data.get("context", ""),
+        cluster_type=k8s_cfg_data.get("cluster_type", "k8s"),
+    )
+
+    k8s_client = K8sClient(k8s_cfg)
+    success, msg = k8s_client.connect()
+    if not success:
+        click.echo(click.style(f"[K8s] 连接失败：{msg}", fg='red'))
+        sys.exit(1)
+
+    try:
+        cmd_str = ' '.join(command) or "ls /"
+        success, output = K8sOps.exec_in_pod(
+            k8s_client, pod_name=pod_name, namespace=namespace,
+            command=cmd_str, container=container,
+        )
+        if not success:
+            click.echo(click.style(f"[K8s] {output}", fg='yellow'))
+        else:
+            click.echo(f"[K8s Exec] ({namespace}/{pod_name}) $ {cmd_str}\n{output}")
+    except Exception as e:
+        click.echo(click.style(f"[K8s] 执行失败：{str(e)}", fg='red'))
+    finally:
+        k8s_client.close()
+
+
+@k8s.command("scale")
+@click.argument('deployment')
+@click.option('--replicas', '-r', required=True, type=int, help='目标副本数')
+@click.option('--namespace', '-n', default='default', help='命名空间')
+def k8s_scale(deployment, replicas, namespace):
+    """扩缩容 Deployment
+
+    示例:
+        keeper k8s scale frontend --replicas 5
+        keeper k8s scale api -n production -r 3
+    """
+    config = AppConfig.from_env()
+    config.load()
+
+    from .tools.k8s.client import K8sClient, K8sClusterConfig
+    from .tools.k8s.ops import K8sOps
+
+    k8s_cfg_data = config.get_k8s_config()
+    k8s_cfg = K8sClusterConfig(
+        kubeconfig_path=k8s_cfg_data.get("kubeconfig", ""),
+        context=k8s_cfg_data.get("context", ""),
+        cluster_type=k8s_cfg_data.get("cluster_type", "k8s"),
+    )
+
+    k8s_client = K8sClient(k8s_cfg)
+    success, msg = k8s_client.connect()
+    if not success:
+        click.echo(click.style(f"[K8s] 连接失败：{msg}", fg='red'))
+        sys.exit(1)
+
+    try:
+        ok, output = K8sOps.scale_deployment(k8s_client, deployment, namespace, replicas)
+        if ok:
+            click.echo(f"[K8s] {output}")
+        else:
+            click.echo(click.style(f"[K8s] {output}", fg='red'))
+    except Exception as e:
+        click.echo(click.style(f"[K8s] 扩缩容失败：{str(e)}", fg='red'))
+    finally:
+        k8s_client.close()
+
+
+@k8s.command("restart")
+@click.argument('deployment')
+@click.option('--namespace', '-n', default='default', help='命名空间')
+def k8s_restart(deployment, namespace):
+    """滚动重启 Deployment
+
+    示例:
+        keeper k8s restart frontend
+        keeper k8s restart api -n production
+    """
+    config = AppConfig.from_env()
+    config.load()
+
+    from .tools.k8s.client import K8sClient, K8sClusterConfig
+    from .tools.k8s.ops import K8sOps
+
+    k8s_cfg_data = config.get_k8s_config()
+    k8s_cfg = K8sClusterConfig(
+        kubeconfig_path=k8s_cfg_data.get("kubeconfig", ""),
+        context=k8s_cfg_data.get("context", ""),
+        cluster_type=k8s_cfg_data.get("cluster_type", "k8s"),
+    )
+
+    k8s_client = K8sClient(k8s_cfg)
+    success, msg = k8s_client.connect()
+    if not success:
+        click.echo(click.style(f"[K8s] 连接失败：{msg}", fg='red'))
+        sys.exit(1)
+
+    try:
+        ok, output = K8sOps.restart_deployment(k8s_client, deployment, namespace)
+        if ok:
+            click.echo(f"[K8s] {output}")
+        else:
+            click.echo(click.style(f"[K8s] {output}", fg='red'))
+    except Exception as e:
+        click.echo(click.style(f"[K8s] 重启失败：{str(e)}", fg='red'))
+    finally:
+        k8s_client.close()
+
+
+@cli.group()
+def docker():
+    """Docker 容器管理命令"""
+    pass
+
+
+@docker.command("ls")
+def docker_ls():
+    """列出 Docker 容器"""
+    from .tools.docker_tools import DockerTools, format_docker_containers
+
+    if not DockerTools.is_docker_available():
+        click.echo(click.style("[Docker] Docker 未安装或未运行", fg='red'))
+        sys.exit(1)
+
+    containers = DockerTools.list_containers()
+    stats = DockerTools.get_container_stats()
+    click.echo(format_docker_containers(containers, stats))
+
+
+@docker.command("stats")
+def docker_stats():
+    """Docker 容器资源统计"""
+    from .tools.docker_tools import DockerTools, format_docker_containers
+
+    if not DockerTools.is_docker_available():
+        click.echo(click.style("[Docker] Docker 未安装或未运行", fg='red'))
+        sys.exit(1)
+
+    containers = DockerTools.list_containers()
+    stats = DockerTools.get_container_stats()
+    click.echo(format_docker_containers(containers, stats))
+
+
+@docker.command("images")
+def docker_images():
+    """列出 Docker 镜像"""
+    from .tools.docker_tools import DockerTools, format_docker_images
+
+    if not DockerTools.is_docker_available():
+        click.echo(click.style("[Docker] Docker 未安装或未运行", fg='red'))
+        sys.exit(1)
+
+    images = DockerTools.list_images()
+    click.echo(format_docker_images(images))
+
+
+@docker.command("prune")
+def docker_prune():
+    """清理无用的 Docker 镜像"""
+    from .tools.docker_tools import DockerTools
+
+    if not DockerTools.is_docker_available():
+        click.echo(click.style("[Docker] Docker 未安装或未运行", fg='red'))
+        sys.exit(1)
+
+    success, output = DockerTools.prune_images()
+    if success:
+        click.echo(click.style(f"[Docker] ✓ 镜像清理: {output}", fg='green'))
+    else:
+        click.echo(click.style(f"[Docker] ✗ {output}", fg='red'))
+
+
+@cli.group()
+def network():
+    """网络诊断命令"""
+    pass
+
+
+@network.command()
+@click.argument('host', default='8.8.8.8')
+@click.option('--count', '-c', default=4, type=int, help='Ping 次数')
+def ping(host, count):
+    """Ping 测试"""
+    from .tools.network import NetworkTools, format_ping_result
+    result = NetworkTools.ping(host, count=count)
+    click.echo(format_ping_result(result))
+
+
+@network.command()
+@click.argument('host')
+@click.argument('port', type=int)
+def port(host, port):
+    """端口连通性检测"""
+    from .tools.network import NetworkTools, format_port_result
+    result = NetworkTools.check_port(host, port)
+    click.echo(format_port_result(result))
+
+
+@network.command()
+@click.argument('domain', default='baidu.com')
+@click.option('--server', '-s', type=str, help='指定 DNS 服务器')
+def dns(domain, server):
+    """DNS 解析检测"""
+    from .tools.network import NetworkTools, format_dns_result
+    result = NetworkTools.dns_lookup(domain, server=server)
+    click.echo(format_dns_result(result))
+
+
+@network.command()
+@click.argument('url')
+def http(url):
+    """HTTP 健康检查"""
+    from .tools.network import NetworkTools, format_http_result
+    result = NetworkTools.http_check(url)
+    click.echo(format_http_result(result))
+
+
+@cli.group()
+def schedule():
+    """定时任务管理命令"""
+    pass
+
+
+@schedule.command("list")
+def schedule_list():
+    """列出所有定时任务"""
+    from .tools.scheduler import TaskScheduler, format_task_list
+    scheduler = TaskScheduler()
+    click.echo(format_task_list(scheduler.list_tasks()))
+
+
+@schedule.command("add")
+@click.option('--cron', '-c', required=True, type=str, help='Cron 表达式')
+@click.option('--description', '-d', required=True, type=str, help='任务描述')
+@click.option('--type', 'task_type', default='inspect', type=str, help='任务类型')
+def schedule_add(cron, description, task_type):
+    """添加定时任务
+
+    示例:
+        keeper schedule add --cron "*/30 * * * *" --description "每30分钟检查K8s" --type k8s_inspect
+        keeper schedule add --cron "0 9 * * *" --description "每天9点巡检" --type batch_inspect
+    """
+    from .tools.scheduler import TaskScheduler
+    scheduler = TaskScheduler()
+    task = scheduler.add_task(cron_expr=cron, description=description, task_type=task_type)
+    click.echo(click.style(f"[定时任务] 已添加任务: {task.description}", fg='green'))
+    click.echo(f"  ID: {task.id}")
+    click.echo(f"  Cron: {task.cron_expr}")
+    click.echo(f"  类型: {task.task_type}")
+
+
+@schedule.command("remove")
+@click.argument('task_id')
+def schedule_remove(task_id):
+    """删除定时任务"""
+    from .tools.scheduler import TaskScheduler
+    scheduler = TaskScheduler()
+    if scheduler.remove_task(task_id):
+        click.echo(click.style(f"[定时任务] 任务 {task_id} 已删除", fg='green'))
+    else:
+        click.echo(click.style(f"[定时任务] 任务 {task_id} 不存在", fg='red'))
+
+
 def main():
     """主入口"""
     cli()

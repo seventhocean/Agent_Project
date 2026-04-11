@@ -11,6 +11,10 @@ from ..config import AppConfig
 from ..tools.server import ServerTools, format_status_report, format_batch_report
 from ..tools.scanner import ScannerTools, format_scan_result, NmapNotInstalledError
 from ..tools.ssh import SSHTools, SSHConfig
+from ..tools.docker_tools import DockerTools, format_docker_containers, format_docker_images
+from ..tools.network import NetworkTools, format_ping_result, format_port_result, format_dns_result, format_http_result
+from ..tools.rca import RCAEngine
+from ..tools.scheduler import TaskScheduler, format_task_list
 
 
 @dataclass
@@ -32,6 +36,9 @@ class Agent:
         self.state.is_running = True
         self.pending_task: Optional[PendingTask] = None
         self.audit = AuditLogger()  # 审计日志记录器
+        self.scheduler = TaskScheduler(config_dir=self.config.config_dir)
+        self.scheduler.set_callback(self._execute_scheduled_task)
+        self.scheduler.start()
 
     def process(self, user_input: str) -> str:
         """处理用户输入
@@ -133,6 +140,11 @@ class Agent:
             IntentType.K8S_LOGS: self._handle_k8s_logs,
             IntentType.K8S_EXPORT: self._handle_k8s_export,
             IntentType.K8S_CONFIG: self._handle_k8s_config,
+            IntentType.K8S_OPS: self._handle_k8s_ops,
+            IntentType.DOCKER_INSPECT: self._handle_docker,
+            IntentType.RCA_ANALYSIS: self._handle_rca,
+            IntentType.NETWORK_DIAG: self._handle_network,
+            IntentType.SCHEDULE_TASK: self._handle_schedule,
             IntentType.UNKNOWN: self._handle_unknown,
         }
 
@@ -258,6 +270,14 @@ class Agent:
             return self._execute_scan(task.host)
         elif task.task_type == "k8s_config":
             return self._execute_k8s_config(entities)
+        elif task.task_type == "k8s_ops":
+            return self._execute_k8s_ops(task)
+        elif task.task_type == "schedule_confirm":
+            return self._execute_schedule_confirm(task)
+        elif task.task_type == "docker_prune":
+            success, output = DockerTools.prune_images()
+            icon = "✓" if success else "✗"
+            return f"[Docker] {icon} 镜像清理: {output}"
 
         return "[系统] 未知任务类型。"
 
@@ -1117,3 +1137,451 @@ class Agent:
             host=",".join(f"{t}:{p}" for t, p in candidates),
         )
         return self.pending_task.message
+
+    def _handle_k8s_ops(self, entities: Dict[str, Any]) -> str:
+        """处理 K8s 深度操作意图"""
+        k8s_client, _, err = self._get_k8s_client(auto_detect=True)
+        if err:
+            return err
+
+        try:
+            action = entities.get("action", "").lower()
+            namespace = entities.get("namespace") or "default"
+
+            # exec 直接执行
+            if action == "exec":
+                from ..tools.k8s.ops import K8sOps
+                pod_name = entities.get("pod_name")
+                command = entities.get("pod_command") or "ls /"
+                if not pod_name:
+                    return "[K8s] 请指定 Pod 名称"
+                success, output = K8sOps.exec_in_pod(
+                    k8s_client, pod_name=pod_name, namespace=namespace, command=command,
+                )
+                if not success:
+                    return f"[K8s] {output}"
+                return f"[K8s Exec] ({namespace}/{pod_name}) $ {command}\n{output}"
+
+            # restart/scale/rollback 需要二次确认
+            if action in ("restart", "scale", "rollback"):
+                deployment = entities.get("deployment")
+                if not deployment:
+                    return "[K8s] 请指定 Deployment 名称"
+
+                action_desc = {"restart": "重启", "scale": "扩缩容", "rollback": "回滚"}[action]
+                replicas = entities.get("replicas")
+
+                detail = ""
+                if action == "scale" and replicas:
+                    detail = f" (目标副本数: {replicas})"
+
+                self.pending_task = PendingTask(
+                    task_type="k8s_ops",
+                    package=action,
+                    host=deployment,
+                    message=(
+                        f"[K8s] 确认{action_desc}: {namespace}/{deployment}{detail}\n\n"
+                        f"此操作会影响线上服务，输入 'yes' 或 '确认' 执行。"
+                    ),
+                )
+                if replicas:
+                    self._pending_k8s_replicas = replicas
+                return self.pending_task.message
+
+            # 默认列出工作负载状态
+            from ..tools.k8s.client import K8sClient
+            from ..tools.k8s.inspector import K8sInspector
+
+            workloads = K8sInspector._check_workloads(k8s_client, namespace)
+            if not workloads:
+                return f"[K8s] 命名空间 '{namespace}' 中未找到工作负载"
+
+            lines = [f"[K8s] 工作负载列表 ({namespace}):"]
+            lines.append("━" * 70)
+            for w in workloads:
+                icon = "✓" if not w.issues else "✗"
+                lines.append(f"  {icon} {w.kind}/{w.name} - {w.ready}/{w.desired} ready")
+                if w.issues:
+                    lines.append(f"    问题: {'; '.join(w.issues)}")
+            return "\n".join(lines)
+
+        except Exception as e:
+            return f"[K8s] 操作失败：{str(e)}"
+        finally:
+            k8s_client.close()
+
+    def _execute_k8s_ops(self, task: PendingTask) -> str:
+        """执行 K8s 确认操作"""
+        k8s_client, _, err = self._get_k8s_client(auto_detect=False)
+        if err:
+            return err
+
+        try:
+            from ..tools.k8s.ops import K8sOps
+            action = task.package
+            deployment = task.host
+            namespace = "default"
+
+            if action == "restart":
+                return K8sOps.restart_deployment(k8s_client, deployment, namespace)[1]
+            elif action == "scale":
+                replicas = getattr(self, '_pending_k8s_replicas', 1)
+                self._pending_k8s_replicas = None
+                return K8sOps.scale_deployment(k8s_client, deployment, namespace, int(replicas))[1]
+            elif action == "rollback":
+                return K8sOps.rollback_deployment(k8s_client, deployment, namespace)[1]
+            return "[K8s] 未知操作"
+        except Exception as e:
+            return f"[K8s] 执行失败：{str(e)}"
+        finally:
+            k8s_client.close()
+
+    def _handle_docker(self, entities: Dict[str, Any]) -> str:
+        """处理 Docker 容器管理意图"""
+        if not DockerTools.is_docker_available():
+            return "[Docker] Docker 未安装或未运行\n\n请确保已安装 Docker 并启动服务。"
+
+        action = entities.get("docker_action", "").lower()
+        container_name = entities.get("host") or entities.get("container") or entities.get("query")
+
+        # 列出容器
+        if action in ("list", "stats", ""):
+            containers = DockerTools.list_containers()
+            if action in ("stats", ""):
+                stats = DockerTools.get_container_stats()
+            else:
+                stats = []
+            return format_docker_containers(containers, stats)
+
+        # 镜像列表
+        if action == "images":
+            images = DockerTools.list_images()
+            return format_docker_images(images)
+
+        # 清理镜像
+        if action == "prune":
+            self.pending_task = PendingTask(
+                task_type="docker_prune",
+                message="[Docker] 确认清理无用的 Docker 镜像？此操作不可逆，输入 'yes' 确认。",
+            )
+            return self.pending_task.message
+
+        # 容器日志
+        if action == "logs" and container_name:
+            success, output = DockerTools.get_container_logs(container_name, lines=100)
+            if not success:
+                return f"[Docker] {output}"
+            max_lines = 200
+            output_lines = output.split("\n")
+            if len(output_lines) > max_lines:
+                output = "\n".join(output_lines[:max_lines]) + f"\n\n... (截断，共 {len(output_lines)} 行)"
+            return f"[Docker 日志] ({container_name}):\n{output}"
+
+        # 容器详情
+        if action == "inspect" and container_name:
+            success, info = DockerTools.inspect_container(container_name)
+            if not success:
+                return f"[Docker] {info.get('error', '获取失败')}"
+            lines = [f"[Docker] 容器详情: {info['name']}"]
+            lines.append("━" * 50)
+            lines.append(f"  状态: {info['state']}")
+            lines.append(f"  镜像: {info['image']}")
+            lines.append(f"  创建: {info['created']}")
+            lines.append(f"  重启策略: {info['restart_policy']}")
+            if info.get("memory_limit"):
+                lines.append(f"  内存限制: {info['memory_limit'] / (1024**3):.1f} GB")
+            if info.get("networks"):
+                lines.append(f"  网络: {', '.join(info['networks'])}")
+            if info.get("mounts"):
+                lines.append(f"  挂载: {len(info['mounts'])} 个")
+            return "\n".join(lines)
+
+        # 容器操作 (restart/stop/start)
+        if action in ("restart", "stop", "start") and container_name:
+            if action == "restart":
+                success, output = DockerTools.restart_container(container_name)
+            elif action == "stop":
+                success, output = DockerTools.stop_container(container_name)
+            else:
+                success, output = DockerTools.start_container(container_name)
+            return f"[Docker] {output}" if success else f"[Docker] {output}"
+
+        # 默认：列出容器
+        containers = DockerTools.list_containers()
+        stats = DockerTools.get_container_stats()
+        return format_docker_containers(containers, stats)
+
+    def _handle_rca(self, entities: Dict[str, Any]) -> str:
+        """处理根因分析意图"""
+        symptom = entities.get("symptom", "")
+        comparison_host = entities.get("comparison_host")
+
+        # 双机对比
+        if comparison_host:
+            try:
+                data_a = RCAEngine.collect_server_data()
+                data_b = RCAEngine.collect_server_data(comparison_host)
+                compare_text = RCAEngine.compare_hosts(
+                    data_a, data_b, "localhost", comparison_host
+                )
+                prompt = RCAEngine.generate_compare_prompt(compare_text)
+                return self._call_llm_diagnosis(prompt)
+            except Exception as e:
+                return f"[RCA] 对比分析失败：{str(e)}"
+
+        # 单主机分析
+        try:
+            data = RCAEngine.collect_server_data()
+            data_text = RCAEngine.analyze_server(data)
+            prompt = RCAEngine.generate_diagnosis_prompt(data_text, symptom)
+            return self._call_llm_diagnosis(prompt)
+        except Exception as e:
+            return f"[RCA] 分析失败：{str(e)}"
+
+    def _handle_network(self, entities: Dict[str, Any]) -> str:
+        """处理网络诊断意图"""
+        action = entities.get("network_action", "").lower()
+        host = entities.get("host")
+        port = entities.get("port")
+        domain = entities.get("domain")
+        url = entities.get("url")
+
+        lines = []
+
+        # 无明确 action — 做一组基础检测
+        if not action:
+            # 默认 ping 8.8.8.8 + DNS 解析 baidu.com
+            ping_result = NetworkTools.ping("8.8.8.8", count=4)
+            lines.append(format_ping_result(ping_result))
+            lines.append("")
+            dns_result = NetworkTools.dns_lookup("baidu.com")
+            lines.append(format_dns_result(dns_result))
+            return "\n".join(lines)
+
+        # Ping
+        if action == "ping":
+            target = host or "8.8.8.8"
+            count = int(entities.get("lines", 4))
+            result = NetworkTools.ping(target, count=count)
+            return format_ping_result(result)
+
+        # 端口检测
+        if action == "port":
+            if not host or not port:
+                return "[网络诊断] 请指定主机和端口，例如：检查 192.168.1.100 的 3306 端口"
+            result = NetworkTools.check_port(host, int(port))
+            return format_port_result(result)
+
+        # DNS
+        if action == "dns":
+            target = domain or "baidu.com"
+            result = NetworkTools.dns_lookup(target)
+            return format_dns_result(result)
+
+        # HTTP
+        if action == "http":
+            target = url or "http://localhost"
+            result = NetworkTools.http_check(target)
+            return format_http_result(result)
+
+        # Traceroute
+        if action == "traceroute":
+            target = host or "8.8.8.8"
+            success, output = NetworkTools.traceroute(target)
+            if not success:
+                return f"[网络诊断] {output}"
+            return f"[网络诊断] 路由追踪到 {target}:\n{output}"
+
+        return "[网络诊断] 未识别的检测类型，请说清楚一些，如 'ping 8.8.8.8' 或 '检查 3306 端口'"
+
+    def _handle_schedule(self, entities: Dict[str, Any]) -> str:
+        """处理定时任务意图"""
+        schedule_action = entities.get("schedule_action", "").lower()
+
+        # 列出任务
+        if schedule_action in ("list", "查看") or (not schedule_action and entities.get("query") in ("查看", "列表")):
+            tasks = self.scheduler.list_tasks()
+            return format_task_list(tasks)
+
+        # 删除任务
+        if schedule_action in ("remove", "删除"):
+            task_id = entities.get("task_id")
+            if task_id:
+                if self.scheduler.remove_task(task_id):
+                    return f"[定时任务] 任务 {task_id} 已删除"
+                return f"[定时任务] 任务 {task_id} 不存在"
+            # 尝试从记忆中获取最后提到的任务 ID
+            tasks = self.scheduler.list_tasks()
+            if tasks:
+                last_task = tasks[-1]
+                self.scheduler.remove_task(last_task.id)
+                return f"[定时任务] 已删除最后一个任务: {last_task.description} ({last_task.id})"
+            return "[定时任务] 没有可删除的任务"
+
+        # 启用/禁用
+        if schedule_action in ("enable", "启用", "disable", "禁用"):
+            task_id = entities.get("task_id")
+            tasks = self.scheduler.list_tasks()
+            if not tasks:
+                return "[定时任务] 没有任务"
+            if task_id:
+                task = self.scheduler.get_task(task_id)
+            else:
+                task = tasks[-1]
+            if not task:
+                return f"[定时任务] 任务不存在"
+            if schedule_action in ("enable", "启用"):
+                self.scheduler.enable_task(task.id)
+                return f"[定时任务] 已启用: {task.description}"
+            else:
+                self.scheduler.disable_task(task.id)
+                return f"[定时任务] 已禁用: {task.description}"
+
+        # 添加任务
+        cron_expr = entities.get("cron_expr", "")
+        description = entities.get("schedule_description", entities.get("query", ""))
+        all_hosts = entities.get("all_hosts", False)
+
+        # 如果没有 cron 表达式，让用户描述需求
+        if not cron_expr:
+            raw_input = entities.get("_raw_input", "")
+            self.pending_task = PendingTask(
+                task_type="schedule_confirm",
+                message=(
+                    f"[定时任务] 请描述你的定时任务需求，例如：\n"
+                    f"  - '每 30 分钟检查一次 K8s 状态'\n"
+                    f"  - '每天早上 9 点巡检所有服务器'\n"
+                    f"  - '每小时检查 Pod 重启情况'\n\n"
+                    f"当前输入：{raw_input}"
+                ),
+            )
+            return self.pending_task.message
+
+        # 确定任务类型
+        task_type = "inspect"
+        params = {}
+        if "k8s" in description.lower() or "k8s" in entities.get("_raw_input", "").lower():
+            task_type = "k8s_inspect"
+            params["namespace"] = entities.get("namespace", "")
+        elif all_hosts:
+            task_type = "batch_inspect"
+
+        if not description:
+            description = entities.get("_raw_input", "定时任务")
+
+        task = self.scheduler.add_task(
+            cron_expr=cron_expr,
+            description=description,
+            task_type=task_type,
+            params=params,
+        )
+        return (
+            f"[定时任务] 已添加任务\n\n"
+            f"  ID: {task.id}\n"
+            f"  描述: {task.description}\n"
+            f"  Cron: {task.cron_expr}\n"
+            f"  类型: {task.task_type}\n\n"
+            f"任务将在到达时间自动执行。使用 '查看定时任务' 管理任务。"
+        )
+
+    def _execute_schedule_confirm(self, task: PendingTask) -> str:
+        """确认并添加定时任务 — 需要 LLM 重新解析 cron"""
+        raw_input = task.message.split("当前输入：")[-1] if "当前输入：" in task.message else ""
+        # 使用 LLM 重新解析输入来获取 cron 表达式
+        from ..nlu.base import ParsedIntent
+        context_dict = {
+            "last_host": self.state.context.current_host,
+            "last_intent": self.state.context.last_intent,
+        }
+        parsed = self.nlu.parse(raw_input, context=context_dict)
+        cron_expr = parsed.entities.get("cron_expr", "")
+
+        if not cron_expr:
+            return "[定时任务] 抱歉，我没有理解你的定时任务需求。请用更明确的描述，如 '每 30 分钟检查一次' 或 '每天早上 9 点巡检'。"
+
+        description = parsed.entities.get("schedule_description", raw_input)
+        task_type = "inspect"
+        if "k8s" in raw_input.lower():
+            task_type = "k8s_inspect"
+        elif parsed.entities.get("all_hosts"):
+            task_type = "batch_inspect"
+
+        task_obj = self.scheduler.add_task(
+            cron_expr=cron_expr,
+            description=description,
+            task_type=task_type,
+            params=parsed.entities,
+        )
+        return (
+            f"[定时任务] 已添加任务\n\n"
+            f"  ID: {task_obj.id}\n"
+            f"  描述: {task_obj.description}\n"
+            f"  Cron: {task_obj.cron_expr}\n"
+            f"  类型: {task_obj.task_type}\n\n"
+            f"任务将在到达时间自动执行。"
+        )
+
+    def _execute_scheduled_task(self, task) -> str:
+        """执行定时任务回调"""
+        task_type = task.task_type
+        params = task.params
+
+        if task_type == "inspect":
+            from ..tools.server import ServerTools, format_status_report
+            thresholds = {
+                "cpu": self.config.get_threshold("cpu"),
+                "memory": self.config.get_threshold("memory"),
+                "disk": self.config.get_threshold("disk"),
+            }
+            status = ServerTools.inspect_server("localhost")
+            return format_status_report(status, thresholds)
+
+        elif task_type == "batch_inspect":
+            from ..tools.server import ServerTools, format_batch_report
+            hosts = SSHTools.get_hosts_from_file("/etc/hosts")
+            if not hosts:
+                return "[定时任务] 批量巡检：/etc/hosts 中无主机"
+            thresholds = {
+                "cpu": self.config.get_threshold("cpu"),
+                "memory": self.config.get_threshold("memory"),
+                "disk": self.config.get_threshold("disk"),
+            }
+            statuses = ServerTools.inspect_multiple_hosts(hosts)
+            return format_batch_report(statuses, thresholds)
+
+        elif task_type == "k8s_inspect":
+            k8s_client, fmt, err = self._get_k8s_client(auto_detect=True)
+            if err:
+                return f"[定时任务] K8s 巡检：{err}"
+            try:
+                from ..tools.k8s.inspector import K8sInspector
+                namespace = params.get("namespace") or None
+                success, report = K8sInspector.inspect_cluster(k8s_client, namespace)
+                if not success:
+                    return f"[定时任务] K8s 巡检失败"
+                result = fmt(report, namespace)
+                return result
+            finally:
+                k8s_client.close()
+
+        elif task_type == "network_diag":
+            result = NetworkTools.ping("8.8.8.8", count=4)
+            return format_ping_result(result)
+
+        return f"[定时任务] 已触发: {task.description}"
+
+    def _call_llm_diagnosis(self, prompt: str) -> str:
+        """调用 LLM 进行诊断"""
+        try:
+            from langchain_core.prompts import ChatPromptTemplate
+            from langchain_core.output_parsers import StrOutputParser
+
+            chain = ChatPromptTemplate.from_messages([
+                ("system", "你是一个资深运维工程师，擅长问题诊断和根因分析。请用简洁专业的中文回答。"),
+                ("human", prompt),
+            ]) | self.nlu._llm | StrOutputParser()
+
+            response = chain.invoke({})
+            return f"[智能分析]\n\n{response.strip()}"
+        except Exception as e:
+            return f"[智能分析] LLM 诊断失败：{str(e)}"

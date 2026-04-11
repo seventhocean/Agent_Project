@@ -19,7 +19,12 @@ class IntentType(str, Enum):
     K8S_INSPECT = "k8s_inspect"   # K8s 集群巡检
     K8S_LOGS = "k8s_logs"         # K8s Pod 日志
     K8S_EXPORT = "k8s_export"     # 导出 K8s 报告
-    K8S_CONFIG = "k8s_config"     # K8s 配置（帮我配置 K8s）
+    K8S_CONFIG = "k8s_config"     # K8s 配置
+    K8S_OPS = "k8s_ops"           # K8s 深度操作 (exec/扩缩容/回滚/重启)
+    DOCKER_INSPECT = "docker_inspect"  # Docker 容器管理
+    RCA_ANALYSIS = "rca_analysis"      # 根因分析
+    NETWORK_DIAG = "network_diag"      # 网络诊断
+    SCHEDULE_TASK = "schedule_task"    # 定时任务
     UNKNOWN = "unknown"      # 未知意图
 
 
