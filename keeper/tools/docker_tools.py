@@ -216,6 +216,141 @@ class DockerTools:
             return False, {"error": str(e)}
 
     @classmethod
+    def docker_inspect(cls) -> Dict[str, Any]:
+        """Docker 全面巡检
+
+        Returns:
+            巡检结果字典
+        """
+        result = {
+            "service_ok": False,
+            "version": "",
+            "server_version": "",
+            "storage_driver": "",
+            "containers_total": 0,
+            "containers_running": 0,
+            "containers_paused": 0,
+            "containers_stopped": 0,
+            "container_list": [],
+            "unhealthy_containers": [],
+            "images_total": 0,
+            "dangling_images": 0,
+            "disk_total": "",
+            "disk_used": "",
+            "disk_available": "",
+            "disk_percent": "",
+            "warnings": [],
+            "health_score": 100,
+        }
+
+        # 1. 服务信息
+        try:
+            info_result = subprocess.run(
+                ["docker", "info", "--format", "{{json .}}"],
+                capture_output=True, text=True, timeout=15,
+            )
+            if info_result.returncode == 0:
+                info = json.loads(info_result.stdout.strip())
+                result["service_ok"] = True
+                result["version"] = info.get("ClientInfo", {}).get("Version", "")
+                result["server_version"] = info.get("ServerVersion", "")
+                result["storage_driver"] = info.get("Driver", "")
+                result["containers_total"] = info.get("Containers", 0)
+                result["containers_running"] = info.get("ContainersRunning", 0)
+                result["containers_paused"] = info.get("ContainersPaused", 0)
+                result["containers_stopped"] = info.get("ContainersStopped", 0)
+                images_total = info.get("Images", 0)
+                result["images_total"] = images_total
+        except Exception:
+            pass
+
+        if not result["service_ok"]:
+            result["warnings"].append("Docker 服务不可用")
+            result["health_score"] = 0
+            return result
+
+        # 2. 容器健康状态
+        try:
+            containers = cls.list_containers()
+            result["container_list"] = containers
+            for c in containers:
+                status_lower = c["status"].lower()
+                if "unhealthy" in status_lower:
+                    result["unhealthy_containers"].append(c["name"])
+                    result["warnings"].append(f"容器 {c['name']} 健康检查失败")
+                elif "restarting" in status_lower:
+                    result["warnings"].append(f"容器 {c['name']} 正在重启")
+                elif "dead" in status_lower:
+                    result["warnings"].append(f"容器 {c['name']} 状态异常 (dead)")
+        except Exception as e:
+            result["warnings"].append(f"容器状态获取失败：{e}")
+
+        # 3. 镜像健康
+        try:
+            images = cls.list_images()
+            result["images_total"] = len(images)
+            dangling = [i for i in images if i["is_dangling"]]
+            result["dangling_images"] = len(dangling)
+            if dangling:
+                result["warnings"].append(f"存在 {len(dangling)} 个 dangling 镜像")
+        except Exception as e:
+            result["warnings"].append(f"镜像列表获取失败：{e}")
+
+        # 4. 磁盘使用
+        try:
+            df_result = subprocess.run(
+                ["docker", "system", "df", "--format", "{{json .}}"],
+                capture_output=True, text=True, timeout=15,
+            )
+            if df_result.returncode == 0:
+                for line in df_result.stdout.strip().split("\n"):
+                    if not line.strip():
+                        continue
+                    df_info = json.loads(line)
+                    if "ImagesSize" in df_info:
+                        total = df_info.get("ImagesSize", 0)
+                        used = df_info.get("ImagesSize", 0)
+                        # docker system df 不直接给 total，用 df 命令替代
+                        break
+        except Exception:
+            pass
+
+        try:
+            df_disk = subprocess.run(
+                ["df", "-h", "--output=size,used,avail,pcent", "/var/lib/docker"],
+                capture_output=True, text=True, timeout=10,
+            )
+            if df_disk.returncode == 0:
+                lines = df_disk.stdout.strip().split("\n")
+                if len(lines) >= 2:
+                    parts = lines[-1].split()
+                    if len(parts) >= 4:
+                        result["disk_total"] = parts[0]
+                        result["disk_used"] = parts[1]
+                        result["disk_available"] = parts[2]
+                        result["disk_percent"] = parts[3]
+        except Exception:
+            pass
+
+        # 5. 健康评分
+        score = 100
+        if result["unhealthy_containers"]:
+            score -= len(result["unhealthy_containers"]) * 15
+        if result["dangling_images"] > 0:
+            score -= 5
+        disk_pct = result["disk_percent"].rstrip("%")
+        try:
+            disk_val = float(disk_pct)
+            if disk_val > 90:
+                score -= 20
+            elif disk_val > 80:
+                score -= 10
+        except ValueError:
+            pass
+        result["health_score"] = max(0, score)
+        return result
+
+    @classmethod
     def list_images(cls) -> List[Dict[str, Any]]:
         """列出镜像
 
@@ -377,5 +512,70 @@ def format_docker_images(images: List[Dict[str, Any]]) -> str:
     dangling = [i for i in images if i["is_dangling"]]
     if dangling:
         lines.append(f"⚠ 发现 {len(dangling)} 个 dangling 镜像，可执行 'docker 清理' 删除")
+
+    return "\n".join(lines)
+
+
+def format_docker_inspect(data: Dict[str, Any]) -> str:
+    """格式化 Docker 巡检报告"""
+    lines = ["[Docker] 巡检报告"]
+    lines.append("=" * 50)
+
+    if not data["service_ok"]:
+        lines.append("  ⛔ Docker 服务不可用，请检查 Docker 是否安装并运行")
+        return "\n".join(lines)
+
+    lines.append(f"  Docker 版本：  {data['version']} (client) / {data['server_version']} (server)")
+    lines.append(f"  存储驱动：    {data['storage_driver']}")
+    lines.append("")
+
+    # 容器状态
+    lines.append("━" * 40)
+    lines.append("容器状态:")
+    lines.append("━" * 40)
+    lines.append(f"  运行中：    {data['containers_running']}")
+    lines.append(f"  已暂停：    {data['containers_paused']}")
+    lines.append(f"  已停止：    {data['containers_stopped']}")
+    lines.append(f"  总计：      {data['containers_total']}")
+    lines.append("")
+
+    if data["unhealthy_containers"]:
+        lines.append("  ⚠ 健康检查失败的容器:")
+        for name in data["unhealthy_containers"]:
+            lines.append(f"    - {name}")
+        lines.append("")
+
+    # 镜像状态
+    lines.append("━" * 40)
+    lines.append("镜像状态:")
+    lines.append("━" * 40)
+    lines.append(f"  镜像总数：  {data['images_total']}")
+    if data["dangling_images"] > 0:
+        lines.append(f"  ⚠ 无用镜像：  {data['dangling_images']} 个（可执行 'docker 清理' 删除）")
+    lines.append("")
+
+    # 磁盘使用
+    if data["disk_used"]:
+        lines.append("━" * 40)
+        lines.append("磁盘使用 (/var/lib/docker):")
+        lines.append("━" * 40)
+        lines.append(f"  总容量：    {data['disk_total']}")
+        lines.append(f"  已用：      {data['disk_used']}")
+        lines.append(f"  可用：      {data['disk_available']}")
+        lines.append(f"  使用率：    {data['disk_percent']}")
+        lines.append("")
+
+    # 健康评分
+    score = data["health_score"]
+    status = "✅ 健康" if score >= 80 else "⚠️  需要注意" if score >= 50 else "❌ 异常"
+    lines.append("=" * 50)
+    lines.append(f"  健康评分：{score}/100 - {status}")
+    lines.append("=" * 50)
+
+    if data["warnings"]:
+        lines.append("")
+        lines.append("  告警项:")
+        for w in data["warnings"]:
+            lines.append(f"    ⚠ {w}")
 
     return "\n".join(lines)

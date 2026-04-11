@@ -11,7 +11,7 @@ from ..config import AppConfig
 from ..tools.server import ServerTools, format_status_report, format_batch_report
 from ..tools.scanner import ScannerTools, format_scan_result, NmapNotInstalledError
 from ..tools.ssh import SSHTools, SSHConfig
-from ..tools.docker_tools import DockerTools, format_docker_containers, format_docker_images
+from ..tools.docker_tools import DockerTools, format_docker_containers, format_docker_images, format_docker_inspect
 from ..tools.network import NetworkTools, format_ping_result, format_port_result, format_dns_result, format_http_result
 from ..tools.rca import RCAEngine
 from ..tools.fixer import FixSuggester, FixPlan, SafetyLevel, generate_fix_prompt_from_data
@@ -1290,6 +1290,12 @@ class Agent:
 
         action = entities.get("docker_action", "").lower()
         container_name = entities.get("host") or entities.get("container") or entities.get("query")
+        raw_input = entities.get("_raw_input", "").lower()
+
+        # 巡检：全面检查服务/容器/镜像/磁盘
+        if action in ("inspect", "check") or any(k in raw_input for k in ("巡检", "检查", "健康", "状态", "有什么问题")):
+            data = DockerTools.docker_inspect()
+            return format_docker_inspect(data)
 
         # 列出容器
         if action in ("list", "stats", ""):
