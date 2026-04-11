@@ -80,8 +80,7 @@ def start_chat():
     # 打印欢迎语
     click.echo(BANNER, color=True)
     click.echo(click.style("👋 你好！我是 Keeper，你的智能运维助手。", fg='green'))
-    click.echo(f"   已连接：{config.llm.base_url} ({config.llm.model})")
-    click.echo("   输入 '退出' 或 Ctrl+D 结束会话\n")
+    click.echo("   输入 '帮助' 查看完整能力列表，输入 '退出' 或 Ctrl+D 结束会话\n")
 
     # REPL 循环
     while True:
