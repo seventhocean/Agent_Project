@@ -1,0 +1,17 @@
+{
+	"folders": [
+		{
+			"path": ".."
+		},
+		{
+			"path": "../../RAG_Knowledgebase"
+		},
+		{
+			"path": "../../Redbook_Create"
+		},
+		{
+			"path": "../../WinterBlog"
+		}
+	],
+	"settings": {}
+}
